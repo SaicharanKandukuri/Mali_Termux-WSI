@@ -282,8 +282,9 @@ static int mali_init_ex(mali_ctx* c, const char* path, int want_native_buffer,
     return 0;
 }
 
-static int mali_init(mali_ctx* c, const char* path, int want_native_buffer) {
+static __attribute__((unused)) int mali_init(mali_ctx* c, const char* path, int want_native_buffer) {
     return mali_init_ex(c, path, want_native_buffer, NULL, 0);
+}
 }
 
 #endif

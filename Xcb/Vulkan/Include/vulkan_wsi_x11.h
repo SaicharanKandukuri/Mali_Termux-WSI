@@ -374,25 +374,27 @@ static void wsi_ly_add(const char* name) {
         paths = WSI_DEFAULT_LAYER_DIR;
     }
 
-    char* cp = strdup(paths);
-    for (char* t = strtok(cp, ":"); t; t = strtok(NULL, ":")) {
-        if (wsi_ly_try(t, name)) break;
-    }
-    free(cp);
+char* cp = strdup(paths);
+char* sp = NULL;
+for (char* t = strtok_r(cp, ":", &sp); t; t = strtok_r(NULL, ":", &sp)) {
+    if (wsi_ly_try(t, name)) break;
+}
+free(cp);
 }
 
 static void wsi_ly_load(const VkInstanceCreateInfo* ci) {
     g_nly = 0;
     for (uint32_t i = 0; i < ci->enabledLayerCount; i++) wsi_ly_add(ci->ppEnabledLayerNames[i]);
     const char* env = getenv("VK_INSTANCE_LAYERS");
-    if (env && *env) {
-        char* cp = strdup(env);
-        for (char* t = strtok(cp, ":,"); t; t = strtok(NULL, ":,")) {
-            while (*t == ' ') t++;
-            if (*t) wsi_ly_add(t);
-        }
-        free(cp);
+if (env && *env) {
+    char* cp = strdup(env);
+    char* sp = NULL;
+    for (char* t = strtok_r(cp, ":,", &sp); t; t = strtok_r(NULL, ":,", &sp)) {
+        while (*t == ' ') t++;
+        if (*t) wsi_ly_add(t);
     }
+    free(cp);
+}
 
     if (!g_nly && (ci->enabledLayerCount || (env && *env))) {
         fprintf(stderr, "vulkan_warning: requested layers not found, running without\n");
@@ -2115,7 +2117,7 @@ static int wsi_load(mali_ctx* c) {
     return 0;
 }
 
-static int wsi_install(mali_ctx* c) {
+static __attribute__((unused)) int wsi_install(mali_ctx* c) {
     g_c = c;
     g_real_gipa = c->gipa;
     g_real_gdpa = c->gdpa;

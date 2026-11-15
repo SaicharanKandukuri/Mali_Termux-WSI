@@ -1087,7 +1087,7 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
     return VK_SUCCESS;
 }
 
-static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* ci) {
+Static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* ci) {
     VkDevice dev = s->dev;
     VkResult r;
     VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1097,7 +1097,6 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
     if ((r = w.CreateFence(dev, &fci, NULL, &s->fence))) return r;
 
     VkDeviceSize bsize = (VkDeviceSize)s->ext.width * s->ext.height * 4;
-    s->coherent = 1;
 
     int mut = (ci->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0;
     VkImageFormatListCreateInfo mfl; int have_mfl = 0;
@@ -1134,13 +1133,22 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
         if ((r = w.CreateBuffer(dev, &bci, NULL, &s->buf[i]))) return r;
         VkMemoryRequirements br; w.GetBufferMemoryRequirements(dev, s->buf[i], &br);
+        
+        // Căutare optimizată a tipului de memorie (Host Cached -> Host Coherent -> Plain Visible)
         uint32_t bt = wsi_find_mem(br.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        s->coherent = 0;
+        if (bt == UINT32_MAX) {
+            bt = wsi_find_mem(br.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            s->coherent = 1;
+        }
         if (bt == UINT32_MAX) {
             s->coherent = 0;
             bt = wsi_find_mem(br.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         }
         if (bt == UINT32_MAX) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+
         VkMemoryAllocateInfo bai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = br.size, .memoryTypeIndex = bt };
         if ((r = w.AllocateMemory(dev, &bai, NULL, &s->bmem[i]))) return r;

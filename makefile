@@ -54,7 +54,7 @@ GLFW_LIBS   := -lxcb -lxcb-randr -lxcb-xkb -lxkbcommon -lxkbcommon-x11 -lEGL -ld
 GBM_DIR  := Xcb/EGL/GBM
 GBM_SRC  := $(wildcard $(GBM_DIR)/Scripts/*.c)
 GBM_OUT  := $(BUILD)/libgbm.so.1
-GBM_DEFS := -D_GNU_SOURCE
+GBM_DEFS := 
 
 # ---- DRM ----
 PREFIX     ?= /data/data/com.termux/files/usr
@@ -92,7 +92,7 @@ GL_SRC    := $(GL_DIR)/Scripts/glx_shim.c
 GL_DEPS   := $(wildcard $(GL_DIR)/Scripts/*) $(wildcard $(GL_DIR)/Include/*) \
              $(GLES_DIR)/Scripts/libGLESv2_shim.c $(GLES_DEPS) src/bcdec/bcdec.h
 GL_OUT    := $(BUILD)/libGL.so.1
-GL_CFLAGS := -D_GNU_SOURCE -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
+GL_CFLAGS := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
              -I$(GLES_DIR)/Scripts -I$(GLES_DIR)/Include -IXcb/EGL/Include \
              -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
 GL_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm

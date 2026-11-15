@@ -1087,7 +1087,7 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
     return VK_SUCCESS;
 }
 
-Static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* ci) {
+static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* ci) {
     VkDevice dev = s->dev;
     VkResult r;
     VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,

@@ -20,7 +20,7 @@
 #include <pthread.h>
 
 #define BCDEC_IMPLEMENTATION
-#include "../Include/bcdec.h"
+#include "bcdec.h"
 
 typedef const unsigned char* (*F_gstr)(unsigned);
 typedef void (*F_shsrc)(unsigned, int, const char* const*, const int*);

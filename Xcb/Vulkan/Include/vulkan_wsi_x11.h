@@ -1134,7 +1134,6 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
         if ((r = w.CreateBuffer(dev, &bci, NULL, &s->buf[i]))) return r;
         VkMemoryRequirements br; w.GetBufferMemoryRequirements(dev, s->buf[i], &br);
         
-        // Căutare optimizată a tipului de memorie (Host Cached -> Host Coherent -> Plain Visible)
         uint32_t bt = wsi_find_mem(br.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
         s->coherent = 0;

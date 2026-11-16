@@ -229,13 +229,18 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 - `Scripts/gl_drawlog.c`, `gl_atlasdump.c` – debugging tools
 - `Include/glx_autoes.h` – picks the ES version from the app's imports
 - `Scripts/gl_tex1d.c` – obsolete (superseded by `gl_es_emul.c`), not built
+- `Scripts/gl_dt_bridge.cpp` – C++ bridge to `Include/gl_desktop_texture.h`:
+  GPU (compute shader) decoding of BC1/2/3/6H/7 for compressed texture uploads
+- `Include/gl_desktop_texture.h` – single-header GPU encoder/decoder for
+  BC1–BC7 (also usable standalone)
 
 ### Dependencies
 
     pkg install clang make libxcb libx11 libglvnd
 
 Also needs `src/bcdec` (bundled), `Xcb/GLES/Include/gles_list.h` and the EGL
-shim at runtime. `libX11` and `libX11-xcb` are loaded with `dlopen`.
+shim at runtime. The GPU BC decoder needs a C++17 compiler (`clang++`) and
+`libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
 
 ### Build
 
@@ -278,6 +283,7 @@ the reported version up to GL 4.3.
 | `GLX_ATLAS_DUMP=<n>`, `GLX_ATLAS_TEX`, `GLX_ATLAS_WH` | ASCII dump of uploaded atlas glyphs |
 | `GLX_ERRLOG=1` | Log GL errors in texture uploads |
 | `GLX_FS_TEST`, `GLX_FS_DBG` | Fragment shader debug injection (WebRender text) |
+| `GLX_NO_GPU_BC=1` | Disable GPU BC decoding, use the CPU decoder (bcdec) |
 
 ### How it works
 
@@ -291,8 +297,11 @@ the reported version up to GL 4.3.
   `sampler2DRect`, `sampler1DArray`, `gl_ClipDistance` and dual-source
   outputs are rewritten. Shaders that fail on int→float conversions are
   recompiled with promoted literals.
-- **Textures:** S3TC, RGTC and BPTC are decoded on the CPU; ETC/EAC pass
-  through; `TEXTURE_1D` uses a height-1 2D texture.
+- **Textures:** S3TC (BC1–3) and BPTC (BC6H/BC7) uploads are decoded on the
+  GPU with compute shaders (ES 3.1+ contexts), then copied into the
+  application's texture with `glCopyImageSubData`. RGTC (BC4/BC5), cubemaps,
+  allocations without data and any GPU failure fall back to the CPU decoder
+  (bcdec). ETC/EAC pass through; `TEXTURE_1D` uses a height-1 2D texture.
 - **Queries:** `GL_VERSION`, extensions and many limits are spoofed;
   `GLX_MESA_query_renderer` is probed from the driver.
 
@@ -307,6 +316,9 @@ the reported version up to GL 4.3.
 - Clip distances are always applied (ignores `glEnable(GL_CLIP_DISTANCEn)`).
 - `glPolygonMode` LINE/POINT only for triangles in emulated ES2/3 contexts.
 - Do not load this together with `libGLESv2.so.2` in the same process.
+- GPU BC decoding: BC6H is delivered as RGBA16F, and BC1 RGB blocks with
+  `color0 <= color1` decode with alpha 0 (punch-through) instead of opaque.
+  Use `GLX_NO_GPU_BC=1` to compare with the CPU path.
   
 ## GLFW
 

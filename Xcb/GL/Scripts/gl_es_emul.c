@@ -436,6 +436,7 @@ static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int
     if (e && *e && *e != '0') return 0;
     cs_fmt f; int ver = emu_ver();
     if (ver < 3 || w <= 0 || h <= 0 || d <= 0 || !cs_lookup(fmt, ver, &f)) return 0;
+    if (fmt == 0x83F0 || fmt == 0x8C4C) return 0;   /* BC1 RGB -> CPU*/
     if (f.kind == 5 || f.kind == 6) return 0;               /* BC4/BC5: R8/RG8 */
 
     unsigned bind, ct = target;

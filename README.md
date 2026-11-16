@@ -215,12 +215,18 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
 ### Layout
 
-- `Scripts/glx_shim.c` – GLX API, contexts, drawables; the only translation
+- `Scripts/glx_shim.c` – GLX API, contexts, drawables; the main C translation
   unit, it `#include`s all the other `.c` files
 - `Scripts/gl_compat.c` – GL 1.x over GLES 1.1: `glBegin/glEnd`, display
   lists, `glRasterPos`/`glDrawPixels`/`glBitmap`
 - `Scripts/gl_es_emul.c` – version/extension strings, GLSL → GLSL ES
-  translation, S3TC/RGTC/BPTC decoding, 1D textures, misc. missing calls
+  translation, S3TC/RGTC/BPTC upload handling (GPU decode with CPU fallback),
+  1D textures, misc. missing calls
+- `Scripts/gl_dt_bridge.cpp` – C++ bridge to `Include/gl_desktop_texture.h`:
+  compute-shader decoding of BC1/BC2/BC3/BC6H/BC7 for compressed texture
+  uploads. Compiled separately and linked into `libGL.so.1`
+- `Include/gl_desktop_texture.h` – single-header GPU encoder/decoder for
+  BC1–BC7 (BC6H included); also usable standalone
 - `Scripts/gl_es_alias.c`, `Include/gl_alias.h` – ARB/EXT/OES/KHR aliases, DSA wrappers
 - `Scripts/gl_desktop_ext.c` – `glPolygonMode`, multi-draw, BGRA uploads
 - `Scripts/gl_dsb.c` – dual-source blending via `GL_ARM_shader_framebuffer_fetch`
@@ -229,22 +235,18 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 - `Scripts/gl_drawlog.c`, `gl_atlasdump.c` – debugging tools
 - `Include/glx_autoes.h` – picks the ES version from the app's imports
 - `Scripts/gl_tex1d.c` – obsolete (superseded by `gl_es_emul.c`), not built
-- `Scripts/gl_dt_bridge.cpp` – C++ bridge to `Include/gl_desktop_texture.h`:
-  GPU (compute shader) decoding of BC1/2/3/6H/7 for compressed texture uploads
-- `Include/gl_desktop_texture.h` – single-header GPU encoder/decoder for
-  BC1–BC7 (also usable standalone)
 
 ### Dependencies
 
     pkg install clang make libxcb libx11 libglvnd
 
-Also needs `src/bcdec` (bundled), `Xcb/GLES/Include/gles_list.h` and the EGL
-shim at runtime. The GPU BC decoder needs a C++17 compiler (`clang++`) and
-`libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
+Also needs `src/bcdec` (bundled, CPU decoder), `Xcb/GLES/Include/gles_list.h`
+and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
+(`clang++`) and `libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
 
 ### Build
 
-    make gl                # build/libGL.so.1
+    make gl                # build/libGL.so.1 (also builds build/gl/gl_dt_bridge.o)
 
 ### Usage
 
@@ -271,8 +273,9 @@ the reported version up to GL 4.3.
 | `GLX_ARGB_VISUAL=0x..` | Visual id for 32-bit windows |
 | `GLX_FORCE_DEPTH24` | Always report 24-bit visuals |
 | `GLX_HIDE_EXT="A,B"` | Hide extensions from the application |
+| `GLX_NO_GPU_BC=1` | Disable GPU BC decoding, use the CPU decoder (bcdec) for all formats |
 | `GLX_NO_LITFIX=1` | Disable the int→float literal repair |
-| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work) |
+| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off` |
 | `GLX_DEBUG=1` | Log the auto ES detection |
 | `GLX_TRACE=1` | Log `glGetIntegerv`/`glGetStringi` queries on stdout |
 | `GLX_SHADER_DUMP=1` | Print shaders sent to Mali |
@@ -283,7 +286,6 @@ the reported version up to GL 4.3.
 | `GLX_ATLAS_DUMP=<n>`, `GLX_ATLAS_TEX`, `GLX_ATLAS_WH` | ASCII dump of uploaded atlas glyphs |
 | `GLX_ERRLOG=1` | Log GL errors in texture uploads |
 | `GLX_FS_TEST`, `GLX_FS_DBG` | Fragment shader debug injection (WebRender text) |
-| `GLX_NO_GPU_BC=1` | Disable GPU BC decoding, use the CPU decoder (bcdec) |
 
 ### How it works
 
@@ -297,11 +299,16 @@ the reported version up to GL 4.3.
   `sampler2DRect`, `sampler1DArray`, `gl_ClipDistance` and dual-source
   outputs are rewritten. Shaders that fail on int→float conversions are
   recompiled with promoted literals.
-- **Textures:** S3TC (BC1–3) and BPTC (BC6H/BC7) uploads are decoded on the
-  GPU with compute shaders (ES 3.1+ contexts), then copied into the
-  application's texture with `glCopyImageSubData`. RGTC (BC4/BC5), cubemaps,
-  allocations without data and any GPU failure fall back to the CPU decoder
-  (bcdec). ETC/EAC pass through; `TEXTURE_1D` uses a height-1 2D texture.
+- **Textures:** uploads of BC1 with alpha, BC2, BC3 (S3TC) and BC6H, BC7
+  (BPTC) are decoded on the GPU by compute shaders (ES 3.1+ contexts):
+  the blocks go to an SSBO, are decoded into a temporary RGBA8 / SRGB8_A8 /
+  RGBA16F texture and copied into the application's texture with
+  `glCopyImageSubData`. The destination's `MIN_FILTER` is relaxed during the
+  copy, so textures that are still incomplete (only level 0 defined) work.
+  Everything else uses the CPU decoder (bcdec) and uploads uncompressed
+  data: BC1 RGB (opaque, `0x83F0` / `0x8C4C`), RGTC (BC4/BC5), non-array
+  cubemaps, allocations without data, and any GPU failure. ETC/EAC pass
+  through; `TEXTURE_1D` uses a height-1 2D texture.
 - **Queries:** `GL_VERSION`, extensions and many limits are spoofed;
   `GLX_MESA_query_renderer` is probed from the driver.
 
@@ -315,11 +322,12 @@ the reported version up to GL 4.3.
   color, fog coord, double attributes and conditional render are stubs.
 - Clip distances are always applied (ignores `glEnable(GL_CLIP_DISTANCEn)`).
 - `glPolygonMode` LINE/POINT only for triangles in emulated ES2/3 contexts.
+- GPU BC decoding: BC6H textures end up as RGBA16F (not RGB16F), and the
+  GPU path creates a temporary texture and buffer per upload. The 2D upload
+  path is covered by tests; sub-image, 3D/array and PBO uploads use the same
+  code but are less tested. Use `GLX_NO_GPU_BC=1` to compare with the CPU path.
 - Do not load this together with `libGLESv2.so.2` in the same process.
-- GPU BC decoding: BC6H is delivered as RGBA16F, and BC1 RGB blocks with
-  `color0 <= color1` decode with alpha 0 (punch-through) instead of opaque.
-  Use `GLX_NO_GPU_BC=1` to compare with the CPU path.
-  
+
 ## GLFW
 
 Path: `Xcb/GL/GLFW`

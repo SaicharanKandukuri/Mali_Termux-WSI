@@ -403,8 +403,93 @@ static void cs_ps_end(const int* sv) {
     }
 }
 
+/* ---------- GPU decode (gl_dt_bridge.cpp) ---------- */
+extern int      dtb_init(void* (*gp)(const char*));
+extern unsigned dtb_decode(int dtfmt, const void* blocks, int w, int h);
+extern void     dtb_release(unsigned tex);
+typedef void (*F_cpimg)(unsigned, unsigned, int, int, int, int,
+                        unsigned, unsigned, int, int, int, int, int, int, int);
+
+static void* cs_gp(const char* n) {
+    void* r = G_mali ? dlsym(G_mali, n) : NULL;   
+    return r ? r : eglGetProcAddress(n);
+}
+
+static int cs_gpu_ready(void) {
+    static void* ctx; static int ok;
+    void* c = T_glx.ctx ? T_glx.ctx->ectx : NULL;
+    if (c != ctx) {
+        ctx = c;
+        ok = c && p_glCopyImageSubData && dtb_init(cs_gp);
+        if (gl_emul_debug_enabled()) fprintf(stderr, "[gl_emul] GPU BC decode: %s\n", ok ? "on" : "off (CPU fallback)");
+    }
+    return ok;
+}
+
+/* 1 = handled on GPU, 0 = use CPU path */
+static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int h, int d,
+                  unsigned fmt, int size, const void* data, int sub, int is3d) {
+    const char* e = getenv("GLX_NO_GPU_BC");
+    if (e && *e && *e != '0') return 0;
+    cs_fmt f; int ver = emu_ver();
+    if (ver < 3 || w <= 0 || h <= 0 || d <= 0 || !cs_lookup(fmt, ver, &f)) return 0;
+    if (f.kind == 5 || f.kind == 6) return 0;               /* BC4/BC5: R8/RG8 */
+
+    unsigned bind, ct = target; int face = 0;
+    switch (target) {
+    case 0x0DE1: bind = 0x8069; break;                      /* 2D */
+    case 0x806F: bind = 0x806A; break;                      /* 3D */
+    case 0x8C1A: bind = 0x8C1D; break;                      /* 2D_ARRAY */
+    case 0x9009: bind = 0x900A; break;                      /* CUBE_ARRAY */
+    default:
+        if (target >= 0x8515 && target <= 0x851A) { bind = 0x8514; ct = 0x8513; face = (int)(target - 0x8515); break; }
+        return 0;
+    }
+    int pbo = 0;
+    RP(glGetIntegerv, F_geti)(0x88EF, &pbo);
+    if (!data && !pbo) return 0;                         
+    size_t slice = (size_t)((w + 3) / 4) * (size_t)((h + 3) / 4) * (size_t)f.bs;
+    if ((size_t)size != slice * (size_t)d) return 0;
+    if (!cs_gpu_ready()) return 0;
+
+    int tex = 0;
+    RP(glGetIntegerv, F_geti)(bind, &tex);
+    if (!tex) return 0;
+
+    const uint8_t* src = data; uint8_t* tmp = NULL;
+    if (pbo) {                                              
+        const uint8_t* m = RP(glMapBufferRange, F_mapr)(0x88EC, (long)(uintptr_t)data, size, 0x0001);
+        if (!m) return 0;
+        tmp = malloc((size_t)size);
+        if (tmp) memcpy(tmp, m, (size_t)size);
+        RP(glUnmapBuffer, F_unmap)(0x88EC);
+        if (!tmp) return 0;
+        src = tmp;
+    }
+    int dt = f.kind <= 2 ? 0 : f.kind == 3 ? 1 : f.kind == 4 ? 2 : f.kind == 7 ? 5 : (f.sgn ? 7 : 6);
+    unsigned ifmt  = f.kind == 8 ? 0x881A : (f.srgb ? 0x8C43 : 0x8058);   /* RGBA16F / SRGB8_A8 / RGBA8 */
+    unsigned gtype = f.kind == 8 ? 0x140B : 0x1401;
+
+    int sv[8] = { 0 }; cs_ps_begin(sv);                    
+    if (!sub) {
+        if (is3d) RP(glTexImage3D, F_ti3)(target, level, (int)ifmt, w, h, d, 0, 0x1908, gtype, NULL);
+        else      RP(glTexImage2D, F_teximg)(target, level, (int)ifmt, w, h, 0, 0x1908, gtype, NULL);
+    }
+    int ok = 1;
+    for (int z = 0; z < d && ok; z++) {
+        unsigned t = dtb_decode(dt, src + slice * (size_t)z, w, h);
+        if (!t) { ok = 0; break; }
+        RP(glCopyImageSubData, F_cpimg)(t, 0x0DE1, 0, 0, 0, 0, (unsigned)tex, ct, level,
+                                        xo, yo, is3d ? zo + z : face, w, h, 1);
+        dtb_release(t);
+    }
+    cs_ps_end(sv); free(tmp);
+    return ok;
+}
+
 GLC void glCompressedTexImage2D(unsigned target, int level, unsigned fmt, int w, int h, int border, int size, const void* data) {
     cs_fmt f; unsigned ifmt, gfmt, gtype; uint8_t* px;
+    if (border == 0 && cs_gpu(target, level, 0, 0, 0, w, h, 1, fmt, size, data, 0, 0)) return;
     if (border == 0 && cs_prepare(fmt, w, h, 1, size, data, 0, &f, &ifmt, &gfmt, &gtype, &px)) {
         int sv[8] = { 0 }; cs_ps_begin(sv);
         RP(glTexImage2D, F_teximg)(target, level, (int)ifmt, w, h, 0, gfmt, gtype, px);
@@ -417,6 +502,7 @@ GLC void glCompressedTexImage2D(unsigned target, int level, unsigned fmt, int w,
 
 GLC void glCompressedTexSubImage2D(unsigned target, int level, int xo, int yo, int w, int h, unsigned fmt, int size, const void* data) {
     cs_fmt f; unsigned ifmt, gfmt, gtype; uint8_t* px;
+    if (cs_gpu(target, level, xo, yo, 0, w, h, 1, fmt, size, data, 1, 0)) return;
     if (cs_prepare(fmt, w, h, 1, size, data, 1, &f, &ifmt, &gfmt, &gtype, &px)) {
         int sv[8] = { 0 }; cs_ps_begin(sv);
         RP(glTexSubImage2D, F_teximg)(target, level, xo, yo, w, h, gfmt, gtype, px);
@@ -429,6 +515,7 @@ GLC void glCompressedTexSubImage2D(unsigned target, int level, int xo, int yo, i
 
 GLC void glCompressedTexImage3D(unsigned target, int level, unsigned fmt, int w, int h, int d, int border, int size, const void* data) {
     cs_fmt f; unsigned ifmt, gfmt, gtype; uint8_t* px;
+    if (border == 0 && cs_gpu(target, level, 0, 0, 0, w, h, d, fmt, size, data, 0, 1)) return;
     if (border == 0 && cs_prepare(fmt, w, h, d, size, data, 0, &f, &ifmt, &gfmt, &gtype, &px)) {
         int sv[8] = { 0 }; cs_ps_begin(sv);
         RP(glTexImage3D, F_ti3)(target, level, (int)ifmt, w, h, d, 0, gfmt, gtype, px);
@@ -441,6 +528,7 @@ GLC void glCompressedTexImage3D(unsigned target, int level, unsigned fmt, int w,
 
 GLC void glCompressedTexSubImage3D(unsigned target, int level, int xo, int yo, int zo, int w, int h, int d, unsigned fmt, int size, const void* data) {
     cs_fmt f; unsigned ifmt, gfmt, gtype; uint8_t* px;
+    if (cs_gpu(target, level, xo, yo, zo, w, h, d, fmt, size, data, 1, 1)) return;
     if (cs_prepare(fmt, w, h, d, size, data, 1, &f, &ifmt, &gfmt, &gtype, &px)) {
         int sv[8] = { 0 }; cs_ps_begin(sv);
         RP(glTexSubImage3D, F_tsi3)(target, level, xo, yo, zo, w, h, d, gfmt, gtype, px);
@@ -606,6 +694,35 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
     if (ver >= 1 && pname >= 0x9047 && pname <= 0x904B) { *v = nvx_meminfo(pname); return; }
     if (pname == 0x88FC) { *v = 1; return; } /* GL_MAX_DUAL_SOURCE_DRAW_BUFFERS */
     if (pname == 0x8068 || pname == 0x8C1C || pname == 0x84F6) pname = 0x8069;
+
+    if (pname >= 0x90D6 && pname <= 0x90DE) {
+        int r = -1;
+        RP(glGetIntegerv, F_geti)(pname, &r);
+        unsigned e = RP(glGetError, unsigned (*)(void))();
+        if (gl_emul_debug_enabled()) {
+            fprintf(stderr, "[ssbo-lim] 0x%x real=%d (err=0x%x)\n", pname, r, e);
+        }
+        if (!e && r >= 0) {
+            *v = r;
+            return;
+        }
+        /* Fallback doar dacă driverul nu recunoaște enum-ul (ex. Geometry/Tess) */
+        switch (pname) {
+        case 0x90D6: // GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS
+        case 0x90D7: // GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS
+        case 0x90D8: // GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS
+        case 0x90D9: // GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS
+            *v = 0; return;
+        case 0x90DA: // GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS
+        case 0x90DB: // GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS
+        case 0x90DC: // GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS
+        case 0x90DD: // GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
+            *v = 8; return;
+        case 0x90DE: // GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+            *v = 134217728; return;
+        }
+    }
+
     
     int gg = gl_emu_ver();
     if (ver >= 1 && pname == 0x821B) { *v = gg == 121 ? 1 : gg / 10; return; }
@@ -659,7 +776,6 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
         /* Shader Storage Buffer Objects (SSBO) */
         case 0x90D2: *v = 134217728; return;
         case 0x90D3: *v = 8; return;
-        case 0x90D6: case 0x90D7: case 0x90D8: *v = 8; return;
 
         /* Tessellation */
         case 0x8E7D: *v = 64; return;
@@ -691,8 +807,6 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
         if (e) fprintf(stderr, "[gl-err] glGetIntegerv(0x%x) -> 0x%x\n", pname, e);
     }
 }
-
-
 
 GLC const unsigned char* glGetStringi(unsigned name, unsigned index) {
     if (gl_trace_on() && index == 0) printf("[trace] glGetStringi(0x%x, 0..)\n", name);
@@ -1063,6 +1177,22 @@ static size_t leg_apply(char* b, size_t n, char* o) {
     return on;
 }
 
+static void gl_strip_depth_layout(char* b, size_t n) {
+    for (size_t i = 0; i + 6 < n; i++) {
+        if (memcmp(b + i, "layout", 6) || (i && gl_idch(b[i - 1]))) continue;
+        size_t j = i + 6;
+        while (j < n && s1d_ws(b[j])) j++;
+        if (j >= n || b[j] != '(') continue;
+        j++;
+        while (j < n && s1d_ws(b[j])) j++;
+        if (j + 6 > n || memcmp(b + j, "depth_", 6)) continue;
+        size_t e = j;
+        while (e < n && b[e] != ';') e++;
+        if (e < n) e++;
+        for (size_t z = i; z < e; z++) if (b[z] != '\n') b[z] = ' ';
+    }
+}
+
 static char* glsl_to_es(const char* src) {
     static int said; if (!said && gl_emul_debug_enabled()) { said = 1; fprintf(stderr, "[glsl] build: dsb-vertex-fix\n"); }
     const char* v = strstr(src, "#version");
@@ -1125,6 +1255,7 @@ static char* glsl_to_es(const char* src) {
     } 
     else {
         gl_blank_word(body, bn, "noperspective");
+        gl_strip_depth_layout(body, bn);
         has1d = s1d_apply(body, bn);
         
         /* Filtrat activare TEXTURE_RECT */
@@ -1135,8 +1266,9 @@ static char* glsl_to_es(const char* src) {
         has1a = sx_apply(body, bn, sx_t1a, 3, sx_f1a, 4);
         cd = cd_apply(body, bn);
         if (!cd && !strstr(start, "#define WR_FRAGMENT_SHADER") &&
+            !gl_word(body, bn, "fragColor") &&
             gl_word(body, bn, "gl_Position") && gl_word(body, bn, "main")) {
-            gl_rep_word(body, bn, "main", "xcc_");   /* "main" has 4 letters, same as "xcc_" */
+            gl_rep_word(body, bn, "main", "xcc_");   /* "main" are 4 litere, la fel ca "xcc_" */
             cc = 1;
         }
         int dsb_ok = !strstr(start, "#define WR_VERTEX_SHADER");
@@ -1179,7 +1311,7 @@ static char* glsl_to_es(const char* src) {
     // --- Shader Patching Test (Injecție Debug FS) ---
     size_t body_start = on;
     memcpy(out + on, body, bn); on += bn; out[on] = 0;
-       if (cc) on += (size_t)sprintf(out + on,
+    if (cc) on += (size_t)sprintf(out + on,
         "\nuniform vec2 xl_clip;\n"
         "void main(){xcc_();"
         "gl_Position.y*=1.0-2.0*xl_clip.x;"
@@ -1237,8 +1369,6 @@ static char* glsl_to_es(const char* src) {
     free(hdr); free(body);
     return out;
 }
-
-
 
 #include "gl_litfix.c"
 

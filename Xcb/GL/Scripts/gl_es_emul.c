@@ -426,6 +426,9 @@ static int cs_gpu_ready(void) {
     return ok;
 }
 
+typedef void (*CS_gtp)(unsigned, unsigned, int*);
+typedef void (*CS_tpi)(unsigned, unsigned, int);
+
 /* 1 = handled on GPU, 0 = use CPU path */
 static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int h, int d,
                   unsigned fmt, int size, const void* data, int sub, int is3d) {
@@ -435,15 +438,14 @@ static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int
     if (ver < 3 || w <= 0 || h <= 0 || d <= 0 || !cs_lookup(fmt, ver, &f)) return 0;
     if (f.kind == 5 || f.kind == 6) return 0;               /* BC4/BC5: R8/RG8 */
 
-    unsigned bind, ct = target; int face = 0;
+    unsigned bind, ct = target;
     switch (target) {
     case 0x0DE1: bind = 0x8069; break;                      /* 2D */
     case 0x806F: bind = 0x806A; break;                      /* 3D */
     case 0x8C1A: bind = 0x8C1D; break;                      /* 2D_ARRAY */
     case 0x9009: bind = 0x900A; break;                      /* CUBE_ARRAY */
     default:
-        if (target >= 0x8515 && target <= 0x851A) { bind = 0x8514; ct = 0x8513; face = (int)(target - 0x8515); break; }
-        return 0;
+        return 0;   /* cubemap (non-array) -> CPU */
     }
     int pbo = 0;
     RP(glGetIntegerv, F_geti)(0x88EF, &pbo);
@@ -475,14 +477,28 @@ static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int
         if (is3d) RP(glTexImage3D, F_ti3)(target, level, (int)ifmt, w, h, d, 0, 0x1908, gtype, NULL);
         else      RP(glTexImage2D, F_teximg)(target, level, (int)ifmt, w, h, 0, 0x1908, gtype, NULL);
     }
+
+    int minf = 0;
+    RP(glGetTexParameteriv, CS_gtp)(ct, 0x2801, &minf);
+    int relax = (minf != 0x2600 && minf != 0x2601);      /* nu NEAREST/LINEAR */
+    if (relax) RP(glTexParameteri, CS_tpi)(ct, 0x2801, 0x2600);
+
     int ok = 1;
     for (int z = 0; z < d && ok; z++) {
         unsigned t = dtb_decode(dt, src + slice * (size_t)z, w, h);
         if (!t) { ok = 0; break; }
+        RP(glGetError, unsigned (*)(void))();            /* golește */
         RP(glCopyImageSubData, F_cpimg)(t, 0x0DE1, 0, 0, 0, 0, (unsigned)tex, ct, level,
-                                        xo, yo, is3d ? zo + z : face, w, h, 1);
+                                        xo, yo, is3d ? zo + z : 0, w, h, 1);
+        unsigned er = RP(glGetError, unsigned (*)(void))();
+        if (er) {
+            if (gl_emul_debug_enabled()) fprintf(stderr, "[gl_emul] GPU BC copy failed: 0x%x\n", er);
+            ok = 0;
+        }
         dtb_release(t);
     }
+    if (relax) RP(glTexParameteri, CS_tpi)(ct, 0x2801, minf);
+
     cs_ps_end(sv); free(tmp);
     return ok;
 }

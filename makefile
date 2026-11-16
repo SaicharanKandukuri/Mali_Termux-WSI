@@ -3,15 +3,15 @@ TARGET  ?= aarch64-linux-android31
 
 ifeq ($(origin CC),default)
 CC := clang
+endif
 ifeq ($(origin CXX),default)
 CXX := clang++
 endif
+CFLAGS   ?= -O2 -Wall -fPIC
+CFLAGS   += --target=$(TARGET)
 CXXFLAGS ?= -O2 -Wall -fPIC
 CXXFLAGS += --target=$(TARGET)
-endif
-CFLAGS  ?= -O2 -Wall -fPIC
-CFLAGS  += --target=$(TARGET)
-LDFLAGS += --target=$(TARGET)
+LDFLAGS  += --target=$(TARGET)
 BUILD   := build
 
 # ---- Vulkan ----
@@ -92,6 +92,9 @@ EGL_CFLAGS := -I$(EGL_DIR)/Include
 EGL_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
 
 # ---- GL ----
+GL_DIR    := Xcb/GL
+GL_SRC    := $(GL_DIR)/Scripts/glx_shim.c
+GL_OUT    := $(BUILD)/libGL.so.1
 GL_BRIDGE_SRC := $(GL_DIR)/Scripts/gl_dt_bridge.cpp
 GL_BRIDGE_OBJ := $(BUILD)/gl/gl_dt_bridge.o
 GL_DEPS   := $(wildcard $(GL_DIR)/Scripts/*) $(wildcard $(GL_DIR)/Include/*) \

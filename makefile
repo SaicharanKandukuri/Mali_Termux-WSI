@@ -104,7 +104,7 @@ GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
                  -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
 GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
-GL_LIBS := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -static-libstdc++
+GL_LIBS := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
 
 .PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl clean
 
@@ -180,7 +180,7 @@ $(GL_BRIDGE_OBJ): $(GL_BRIDGE_SRC) $(GL_DIR)/Include/gl_desktop_texture.h
 
 $(GL_OUT): $(GL_SRC) $(GL_DEPS) $(GL_BRIDGE_OBJ) | $(EGL_OUT)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(GL_CFLAGS) -shared -Wl,-soname,libGL.so.1 $< $(GL_BRIDGE_OBJ) -o $@ $(LDFLAGS) $(GL_LIBS)
+	$(CXX) $(CFLAGS) $(GL_CFLAGS) -shared -Wl,-soname,libGL.so.1 $< $(GL_BRIDGE_OBJ) -o $@ $(LDFLAGS) $(GL_LIBS)
 	cp $(GL_OUT) $(BUILD)/libGL.so
 	cp $(GL_OUT) $(BUILD)/libGLX.so
 	cp $(GL_OUT) $(BUILD)/libGLX.so.0

@@ -104,7 +104,7 @@ GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
                  -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
 GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
-GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
+GL_LIBS := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -static-libstdc++
 
 .PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl clean
 

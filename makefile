@@ -94,9 +94,10 @@ EGL_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
 # ---- GL ----
 GL_DIR        := Xcb/GL
 GL_SRC        := $(GL_DIR)/Scripts/glx_shim.c
-GL_OUT        := $(BUILD)/libGL.so.1
+GL_SHIM_OBJ   := $(BUILD)/gl/glx_shim.o
 GL_BRIDGE_SRC := $(GL_DIR)/Scripts/gl_dt_bridge.cpp
 GL_BRIDGE_OBJ := $(BUILD)/gl/gl_dt_bridge.o
+GL_OUT        := $(BUILD)/libGL.so.1
 GL_DEPS       := $(wildcard $(GL_DIR)/Scripts/*) $(wildcard $(GL_DIR)/Include/*) \
                  $(GLES_DIR)/Scripts/libGLESv2_shim.c $(GLES_DEPS) src/bcdec/bcdec.h
 GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
@@ -104,7 +105,7 @@ GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
                  -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
 GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
-GL_LIBS := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
+GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
 
 .PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl clean
 
@@ -174,13 +175,17 @@ $(EGL_OUT): $(EGL_SRC) $(EGL_DEPS)
 	$(CC) $(CFLAGS) $(EGL_CFLAGS) -shared -Wl,-soname,libEGL.so.1 $< -o $@ $(LDFLAGS) $(EGL_LIBS)
 	cp $(EGL_OUT) $(BUILD)/libEGL.so
 
+$(GL_SHIM_OBJ): $(GL_SRC) $(GL_DEPS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(GL_CFLAGS) -c $< -o $@
+
 $(GL_BRIDGE_OBJ): $(GL_BRIDGE_SRC) $(GL_DIR)/Include/gl_desktop_texture.h
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(GL_CXXFLAGS) -c $< -o $@
 
-$(GL_OUT): $(GL_SRC) $(GL_DEPS) $(GL_BRIDGE_OBJ) | $(EGL_OUT)
+$(GL_OUT): $(GL_SHIM_OBJ) $(GL_BRIDGE_OBJ) | $(EGL_OUT)
 	@mkdir -p $(BUILD)
-	$(CXX) $(CFLAGS) $(GL_CFLAGS) -shared -Wl,-soname,libGL.so.1 $< $(GL_BRIDGE_OBJ) -o $@ $(LDFLAGS) $(GL_LIBS)
+	$(CXX) $(LDFLAGS) -shared -Wl,-soname,libGL.so.1 $^ -o $@ $(GL_LIBS)
 	cp $(GL_OUT) $(BUILD)/libGL.so
 	cp $(GL_OUT) $(BUILD)/libGLX.so
 	cp $(GL_OUT) $(BUILD)/libGLX.so.0

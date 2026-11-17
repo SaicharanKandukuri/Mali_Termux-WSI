@@ -1,5 +1,5 @@
 # Android API 
-TARGET  ?= aarch64-linux-android28
+TARGET  ?= aarch64-linux-android29
 
 ifeq ($(origin CC),default)
 CC := clang

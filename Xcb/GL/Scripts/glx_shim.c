@@ -4,7 +4,8 @@
  * Includes libGLESv2_shim.c: same trampolines gl* -> Mali (+ framebuffer 0), so
  * libGL.so.1 exports gl* functions as well, not just glX*.
  *
- * (requires libEGL.so.1 and gles_list.h already generated)
+ * Build:  sh build_glx.sh          (requires libEGL.so.1 and gles_list.h already generated)
+ * Run:    LD_LIBRARY_PATH=$PWD ./glx_application
  *
  * Context: Mali only has GLES. ES version is selected as follows:
  *   GLX_ES=1|2|3 (env)              -> forced
@@ -21,10 +22,10 @@
 
 /* Functions overridden by gl_compat.c / gl_es_emul.c / gl_desktop_ext.c (wrapper with display list recording / GL_FRONT_AND_BACK)
    that Mali already exports: their trampolines get an alternative name, pointer p_<name> remains. */
-
+/* Funcții noi adăugate pentru Dual-Source Blending și Pipeline Management */
 #define glBlendFunc                glx_ovr_glBlendFunc
 #define glBlendFuncSeparate        glx_ovr_glBlendFuncSeparate
-#define glBlendFunci               glx_ovr_glBlendFunci  
+#define glBlendFunci               glx_ovr_glBlendFunci  /* <--- Adăugat aici */
 #define glBlendEquation            glx_ovr_glBlendEquation
 #define glBlendEquationSeparate    glx_ovr_glBlendEquationSeparate
 #define glBlendColor               glx_ovr_glBlendColor
@@ -85,9 +86,11 @@
 #define glBeginTransformFeedback  glx_ovr_glBeginTransformFeedback
 #define glEndTransformFeedback    glx_ovr_glEndTransformFeedback
 #define glGetFramebufferAttachmentParameteriv glx_ovr_glGetFramebufferAttachmentParameteriv
+#define glGetInternalformativ glx_ovr_glGetInternalformativ
 
 #include "libGLESv2_shim.c"
 
+#undef glGetInternalformativ
 #undef glGetFramebufferAttachmentParameteriv
 #undef glEndTransformFeedback
 #undef glBeginTransformFeedback
@@ -227,7 +230,7 @@ static glx_xid glx_next_pb = 0x7e000000UL;
 static __thread struct { glx_ctx* ctx; glx_xid draw, read; void* dpy; int is_pix; } T_glx;
 static int glx_fbattr(void* ed, void* cfg, int attr, int* v);
 
-#include "glx_autoes.h"  
+#include "../Include/glx_autoes.h"  
 #include "gl_compat.c"      
 #include "gl_es_emul.c"     
 #include "gl_drawlog.c"
@@ -236,7 +239,7 @@ static int glx_fbattr(void* ed, void* cfg, int attr, int* v);
 #include "gl_clipdist.c"
 #define GL_ALIAS_IMPL
 #define g_mali_handle G_mali
-#include "gl_alias.h"       /* core->OES->EXT->KHR, glMapBuffer, glDrawBuffer, TexGen */
+#include "../Include/gl_alias.h"       /* core->OES->EXT->KHR, glMapBuffer, glDrawBuffer, TexGen */
 
 /* ---------- Xlib via dlsym (no direct libX11 linking) ---------- */
 static struct {
@@ -767,7 +770,7 @@ GLX_EXPORT int glXGetConfig(void* dpy, void* vis, int attrib, int* value) {
     glx_xvi* vi = (glx_xvi*)vis;
     if (vi && glx_xlib() &&
         vi->visualid != GX.XVisualIDFromVisual(GX.XDefaultVisual(dpy, vi->screen))) {
-    
+        /* Dacă este un visual ARGB valid (depth 32), permițăm interogarea */
         if (vi->depth != 32) {
             if (attrib == 1) { *value = 0; return 0; }       /* GLX_USE_GL = False */
             return 4;                                        /* GLX_BAD_VISUAL */
@@ -909,6 +912,7 @@ GLX_EXPORT const char* glXQueryCurrentRendererStringMESA(int attr);
 /* ---------- glXGetProcAddress ---------- */
 GLX_EXPORT void* glXGetProcAddress(const unsigned char* name);
 #define GPA(n) { #n, (void*)n }
+/* Symbol from our own libGL (wrappers + trampolines), not directly from Mali */
 static void* glx_self_sym(const char* n) {
     static void* h;
     if (!h) {

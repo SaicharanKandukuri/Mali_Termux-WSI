@@ -131,7 +131,7 @@ static const char* const emu_arb3[] = {
     "GL_ARB_texture_compression_bptc", "GL_ATI_meminfo", "GL_NVX_gpu_memory_info",
     "GL_EXT_blend_func_extended",
     "GL_ARB_clip_control", "GL_ARB_shader_draw_parameters",
-    "GL_ARB_compute_shader", "GL_ARB_shader_storage_buffer_object", "GL_ARB_shader_image_load_store",
+    "GL_ARB_compute_shader", "GL_EXT_memory_object", "GL_EXT_semaphore", "GL_ARB_shader_storage_buffer_object", "GL_ARB_shader_image_load_store",
     "GL_ARB_shader_atomic_counters", "GL_ARB_program_interface_query", "GL_ARB_explicit_uniform_location",
     "GL_ARB_vertex_attrib_binding", "GL_ARB_framebuffer_no_attachments", "GL_ARB_texture_storage_multisample",
     "GL_ARB_draw_indirect", "GL_ARB_ES3_1_compatibility", "GL_ARB_clear_buffer_object",
@@ -436,7 +436,7 @@ static int cs_gpu(unsigned target, int level, int xo, int yo, int zo, int w, int
     if (e && *e && *e != '0') return 0;
     cs_fmt f; int ver = emu_ver();
     if (ver < 3 || w <= 0 || h <= 0 || d <= 0 || !cs_lookup(fmt, ver, &f)) return 0;
-    if (fmt == 0x83F0 || fmt == 0x8C4C) return 0;   /* BC1 RGB -> CPU*/
+    if (fmt == 0x83F0 || fmt == 0x8C4C) return 0;   /* BC1 RGB -> CPU (alpha opac) */
     if (f.kind == 5 || f.kind == 6) return 0;               /* BC4/BC5: R8/RG8 */
 
     unsigned bind, ct = target;
@@ -555,6 +555,7 @@ GLC void glCompressedTexSubImage3D(unsigned target, int level, int xo, int yo, i
     etc_dbg(fmt);
     RP(glCompressedTexSubImage3D, F_ctsi3)(target, level, xo, yo, zo, w, h, d, fmt, size, data);
 }
+
 
 GLC void glCompressedTexImage1D(unsigned t, int lv, unsigned f, int w, int b, int sz, const void* d) {
     glCompressedTexImage2D(t1d(t), lv, f, w, 1, b, sz, d);
@@ -711,7 +712,7 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
     if (ver >= 1 && pname >= 0x9047 && pname <= 0x904B) { *v = nvx_meminfo(pname); return; }
     if (pname == 0x88FC) { *v = 1; return; } /* GL_MAX_DUAL_SOURCE_DRAW_BUFFERS */
     if (pname == 0x8068 || pname == 0x8C1C || pname == 0x84F6) pname = 0x8069;
-
+    if (pname == 0x9596) { *v = 1; return; }
     if (pname >= 0x90D6 && pname <= 0x90DE) {
         int r = -1;
         RP(glGetIntegerv, F_geti)(pname, &r);
@@ -1468,13 +1469,14 @@ typedef void (*T1_cti2)(unsigned, int, unsigned, int, int, int, int, int);
 typedef void (*T1_ctsi2)(unsigned, int, int, int, int, int, int, int);
 typedef void (*T1_ts2)(unsigned, int, unsigned, int, int);
 
-GLC void glTexParameteri(unsigned t, unsigned p, int v)   { RP(glTexParameteri, T1_pi)(t1d(t), p, v); }
-GLC void glTexParameterf(unsigned t, unsigned p, float v) { RP(glTexParameterf, T1_pf)(t1d(t), p, v); }
-GLC void glTexParameteriv(unsigned t, unsigned p, const int* v)   { RP(glTexParameteriv, T1_piv)(t1d(t), p, v); }
-GLC void glTexParameterfv(unsigned t, unsigned p, const float* v) { RP(glTexParameterfv, T1_pfv)(t1d(t), p, v); }
-GLC void glGetTexParameteriv(unsigned t, unsigned p, int* v)      { RP(glGetTexParameteriv, T1_giv)(t1d(t), p, v); }
-GLC void glGetTexParameterfv(unsigned t, unsigned p, float* v)    { RP(glGetTexParameterfv, T1_gfv)(t1d(t), p, v); }
+GLC void glTexParameteri(unsigned t, unsigned p, int v)           { if (p == 0x9580) return; RP(glTexParameteri, T1_pi)(t1d(t), p, v); }
+GLC void glTexParameterf(unsigned t, unsigned p, float v)         { if (p == 0x9580) return; RP(glTexParameterf, T1_pf)(t1d(t), p, v); }
+GLC void glTexParameteriv(unsigned t, unsigned p, const int* v)   { if (p == 0x9580) return; RP(glTexParameteriv, T1_piv)(t1d(t), p, v); }
+GLC void glTexParameterfv(unsigned t, unsigned p, const float* v) { if (p == 0x9580) return; RP(glTexParameterfv, T1_pfv)(t1d(t), p, v); }
+GLC void glGetTexParameteriv(unsigned t, unsigned p, int* v)      { if (p == 0x9580) { *v = 0x9584; return; } RP(glGetTexParameteriv, T1_giv)(t1d(t), p, v); }
+GLC void glGetTexParameterfv(unsigned t, unsigned p, float* v)    { if (p == 0x9580) { *v = (float)0x9584; return; } RP(glGetTexParameterfv, T1_gfv)(t1d(t), p, v); }
 GLC void glGenerateMipmap(unsigned t)                             { RP(glGenerateMipmap, T1_gm)(t1d(t)); }
+
 
 GLC void glGetTexLevelParameteriv(unsigned t, int l, unsigned p, int* v) {
     if (t == 0x0DE0 && p == 0x1001) { *v = 1; return; }
@@ -2090,4 +2092,6 @@ GLC void glPrimitiveBoundingBoxARB(float minX, float minY, float minZ, float min
     if (p) ((O_pbb)p)(minX, minY, minZ, minW, maxX, maxY, maxZ, maxW);
 }
       
+#include "gl_extmem.c"
 #include "gl_es_alias.c"
+

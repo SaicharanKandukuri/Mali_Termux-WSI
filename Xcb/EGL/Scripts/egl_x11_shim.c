@@ -8,6 +8,12 @@
  *   app -> offscreen FBO (GLES3) -> GPU pass (flip Y + swizzle) -> AHardwareBuffer
  *   (linear dma-buf) -> DRI3 pixmap_from_buffer -> Present (IDLE_NOTIFY, N buffers)
  * Automatic fallback to legacy WSI if anything fails.
+ *
+ * Build:
+ *   clang --target=aarch64-linux-android31 -shared -fPIC -O2 -Wall -fvisibility=hidden \
+ *         -o libEGL.so.1 egl_x11_shim.c -ldl -lxcb -lxcb-dri3 -lxcb-present \
+ *         -Wl,-soname,libEGL.so.1
+ *   ln -sf libEGL.so.1 libEGL.so
  */
 #define _GNU_SOURCE
 #include "wsi_egl_x11.h"
@@ -251,10 +257,10 @@ typedef struct shim_surf {
     wsi_x11* wsi;
     void* ctx;
     int interval;
-    void* dpy;      /* display that owns this surface */
-    struct shim_surf* rel_next;   /* temporary list used in eglDestroyContext */
+    void* dpy;      /* display-ul căruia îi aparține suprafața */
+    struct shim_surf* rel_next;   /* lista temporară din eglDestroyContext */
     /* dmabuf path */
-    int releasing;   /* claimed by a single teardown */
+    int releasing;   /* revendicat de un singur teardown */
     int dmabuf_inited, dmabuf_failed, no_idle, swz, fmt;
     dmabuf_slot_t slots[MAX_BUFFERS];
     int current_slot;
@@ -362,7 +368,7 @@ static void dbg_msg(unsigned err, const char* cmd, int mtype,
     pthread_mutex_lock(&D.mu);
     cb = D.cb; en = D.on[mtype - EGL_DEBUG_MSG_CRITICAL_KHR];
     pthread_mutex_unlock(&D.mu);
-    if (!cb || !en) return;          /* invoke callback unlocked (not reentrant) */
+    if (!cb || !en) return;          /* callback apelat fara lock (nu e reentrant) */
     cb(err, cmd, mtype, T_label, otype ? lbl_get(otype, obj) : NULL, msg);
 }
 
@@ -389,7 +395,7 @@ EXPORT int eglDebugMessageControlKHR(dbg_cb_t cb, const intptr_t* at) {
     pthread_mutex_lock(&D.mu);
     D.cb = cb;
     if (cb) memcpy(D.on, nv, sizeof nv);
-    else { D.on[0] = D.on[1] = 1; D.on[2] = D.on[3] = 0; }   /* reset to defaults */
+    else { D.on[0] = D.on[1] = 1; D.on[2] = D.on[3] = 0; }   /* reset la default */
     pthread_mutex_unlock(&D.mu);
     return E_SUCCESS;
 }
@@ -456,7 +462,7 @@ static void mali_err(const char* cmd) {
     if (!ge) *(void**)&ge = rsym("eglGetError");
     int e = ge ? ge() : E_SUCCESS;
     if (e == E_SUCCESS) return;
-    T_err = e;                          /* application still observes it via eglGetError */
+    T_err = e;                          /* aplicația îl vede în continuare */
     int crit = (e == E_BAD_ALLOC || e == 0x300E);
     dbg_msg(e, cmd, crit ? EGL_DEBUG_MSG_CRITICAL_KHR : EGL_DEBUG_MSG_ERROR_KHR,
             0, NULL, "EGL error from driver");
@@ -1184,7 +1190,7 @@ static int app_tex_afbc(shim_surf* s, void* (*get_cb)(void*),
         if (fd >= 0) { sz = lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET); }
         long long lin = (long long)d.stride * 4 * s->h;
         fprintf(stderr, "[shim] app texture: AHB stride %u px, fd size %lld, linear %lld => %s\n",
-                d.stride, sz, lin, sz > lin ? "AFBC (headers + body)" : "appears LINEAR");
+                d.stride, sz, lin, sz > lin ? "AFBC (headere + body)" : "pare LINEAR");
     }
     return 1;
 }
@@ -1457,7 +1463,7 @@ static int gbm_load(void) {
         *(void**)&GB.size = dlsym(h, "gbm_surface_ahb_size");
     }
     GB.state = (GB.anwb && GB.deq && GB.enq && GB.size) ? 1 : -1;
-    if (GB.state < 0) DBG("[shim] gbm: libgbm.so.1 (AHB) missing or incomplete\n");
+    if (GB.state < 0) DBG("[shim] gbm: libgbm.so.1 (AHB) lipseste sau e incompleta\n");
     return GB.state > 0 ? 0 : -1;
 }
 
@@ -1503,7 +1509,7 @@ static int gbm_slot(shim_surf* s, void* bo) {
 
     static const int attr[] = { 0x30D2, 1, 0x3038 };
     void* img = create_img(G.gdpy, NULL, 0x3140, anwb, attr);
-    if (!img) { DBG("[shim] gbm: eglCreateImageKHR failed\n"); return -1; }
+    if (!img) { DBG("[shim] gbm: eglCreateImageKHR esuat\n"); return -1; }
 
     gl_saved st; gl_save(&st);
     int k = s->ngsl;
@@ -1519,7 +1525,7 @@ static int gbm_slot(shim_surf* s, void* bo) {
     unsigned fs = GL.checkFramebufferStatus(C_FRAMEBUFFER);
     gl_restore(&st);
     if (fs != C_FB_COMPLETE) {
-        DBG("[shim] gbm: FBO incomplete (0x%x)\n", fs);
+        DBG("[shim] gbm: FBO incomplet (0x%x)\n", fs);
         unsigned (*di)(void*, void*) = rsym("eglDestroyImageKHR");
         GL.deleteFramebuffers(1, &fbo); GL.deleteTextures(1, &tex);
         if (di) di(G.gdpy, img);
@@ -1539,7 +1545,7 @@ static void* make_gbm_surface(void* gs) {
     if (!s) { SET_ERR(E_BAD_ALLOC); return NULL; }
     s->magic = SURF_MAGIC; s->is_gbm = 1; s->gs = gs;
     s->w = (int)w; s->h = (int)h; s->interval = 1; s->gcur = -1;
-    s->dpy = G.gdpy;
+      s->dpy = G.gdpy;
     pthread_mutex_lock(&G.mu);
     s->next = G.surfs; G.surfs = s;
     pthread_mutex_unlock(&G.mu);
@@ -1571,7 +1577,7 @@ static int gbm_attach(shim_surf* s, void* ctx) {
     GL.bindFramebuffer(C_FRAMEBUFFER, s->gsl[k].fbo);
     GL.viewport(0, 0, s->w, s->h);
     GL.scissor(0, 0, s->w, s->h);
-    DBG("[shim] GBM surface active (%dx%d)\n", s->w, s->h);
+    DBG("[shim] GBM surface activ (%dx%d)\n", s->w, s->h);
     return 0;
 }
 
@@ -1583,7 +1589,7 @@ static void gbm_swap(shim_surf* s) {
     GB.enq(s->gs, s->cur_bo);
     void* bo = NULL;
     for (int i = 0; i < 1000 && !(bo = GB.deq(s->gs)); i++) usleep(1000);
-    if (!bo) { DBG("[shim] gbm: no free bo available\n"); return; }
+    if (!bo) { DBG("[shim] gbm: niciun bo liber\n"); return; }
     int k = gbm_slot(s, bo);
     if (k < 0) return;
     s->cur_bo = bo; s->gcur = k;
@@ -1614,7 +1620,7 @@ static void* make_window_surface(void* d, uint32_t win) {
     s->magic = SURF_MAGIC; s->win = win; s->w = g->width; s->h = g->height;
     s->x = g->x; s->y = g->y; s->bw = g->border_width; s->depth = g->depth;
     s->interval = 1;
-    s->dpy = d;
+            s->dpy = d;
     free(g);
     pthread_mutex_lock(&G.mu);
     s->next = G.surfs; G.surfs = s;
@@ -1752,9 +1758,9 @@ EXPORT void* eglGetPlatformDisplayEXT(unsigned platform, void* native, const int
 
 EXPORT void* eglGetPlatformDisplay(unsigned platform, void* native, const intptr_t* at) {
     int other;
-    DBG("[shim] getPlatformDisplay platform=0x%x native=%p\n", platform, native);
-    for (const intptr_t* a = at; a && *a != E_NONE; a += 2)
-        DBG("[shim]   attr 0x%lx = 0x%lx\n", (long)a[0], (long)a[1]);
+  DBG("[shim] getPlatformDisplay platform=0x%x native=%p\n", platform, native);
+for (const intptr_t* a = at; a && *a != E_NONE; a += 2)
+    DBG("[shim]   attr 0x%lx = 0x%lx\n", (long)a[0], (long)a[1]);
     if (!track_refs_check(at, &other)) { SET_ERR(E_BAD_ATTRIBUTE); return NULL; }
     if (platform == EGL_PLATFORM_DEVICE_EXT)
         return device_display(native, other);
@@ -1997,7 +2003,7 @@ EXPORT void* eglCreateImageKHR(void* d, void* c, unsigned t, void* b, const int*
         drm_img* r = drm_img_find_name((int)(intptr_t)b);
         void* anwb = (r && ahb_to_anwb) ? ahb_to_anwb(r->ab) : NULL;
         if (!anwb || !ahb_acquire) { SET_ERR(E_BAD_PARAMETER); return NULL; }
-        ahb_acquire(r->ab);                    /* reference for the imported image */
+        ahb_acquire(r->ab);                    /* referința imaginii importate */
         imp_ab = r->ab;
         static const int pres[] = { 0x30D2, 1, 0x3038 };
         t = 0x3140; b = anwb; c = NULL; a = pres;
@@ -2088,6 +2094,8 @@ EXPORT void* eglCreateDRMImageMESA(void* d, const int* at) {
     return img;
 }
 
+
+
 EXPORT unsigned eglExportDRMImageMESA(void* d, void* image, int* name, int* handle, int* stride) {
     (void)d;
     drm_img* r = drm_img_find(image);
@@ -2102,7 +2110,7 @@ EXPORT unsigned eglExportDRMImageMESA(void* d, void* image, int* name, int* hand
 /* ---------- Sync wrapper (EGL_EXT_sync_reuse) ---------- */
 typedef struct shim_sync {
     struct shim_sync* next;
-    void* real;        /* driver's sync; NULL = created/remained signaled */
+    void* real;        /* sync-ul driverului; NULL = creat/ramas signaled */
     unsigned type;
     int reusable, signaled;
 } shim_sync; 
@@ -2136,7 +2144,7 @@ EXPORT void* eglCreateSyncKHR(void* d, unsigned t, const int* at) {
     shim_sync* s = calloc(1, sizeof *s);
     if (!s) { SET_ERR(E_BAD_ALLOC); return NULL; }
     s->type = t;
-    if (t == 0x30FA) {                      /* EGL_SYNC_REUSABLE_KHR */
+      if (t == 0x30FA) {                      /* EGL_SYNC_REUSABLE_KHR */
         s->reusable = 1;
         s->signaled = (st == 0x30F2);
         pthread_mutex_lock(&G.mu); s->next = g_syncs; g_syncs = s; pthread_mutex_unlock(&G.mu);
@@ -2176,14 +2184,14 @@ EXPORT int eglClientWaitSyncKHR(void* d, void* sync, int flags, uint64_t t) {
     static int (*f)(void*, void*, int, uint64_t);
     if (!f) *(void**)&f = rsym("eglClientWaitSyncKHR");
     shim_sync* s = sync_find(sync);
-    if (s && s->reusable) {
+      if (s && s->reusable) {
         uint64_t waited = 0;
         while (!__atomic_load_n(&s->signaled, __ATOMIC_ACQUIRE)) {
             if (t == 0 || (t != ~0ULL && waited >= t)) return 0x30F5;   /* TIMEOUT */
             usleep(1000); waited += 1000000ULL;
         }
         return 0x30F6;
-    }
+      }
     if (s && !s->real) return 0x30F6;       /* EGL_CONDITION_SATISFIED_KHR */
     return f ? f(d, s ? s->real : sync, flags, t) : 0;
 }
@@ -2203,12 +2211,12 @@ EXPORT unsigned eglGetSyncAttribKHR(void* d, void* sync, int a, int* v) {
     static unsigned (*f)(void*, void*, int, int*);
     if (!f) *(void**)&f = rsym("eglGetSyncAttribKHR");
     shim_sync* s = sync_find(sync);
-    if (s && s->reusable) {
+      if (s && s->reusable) {
         if (!v) { SET_ERR(E_BAD_PARAMETER); return 0; }
         if (a == 0x30F7) { *v = 0x30FA; return 1; }
         if (a == 0x30F1) { *v = __atomic_load_n(&s->signaled, __ATOMIC_ACQUIRE) ? 0x30F2 : 0x30F3; return 1; }
         SET_ERR(E_BAD_ATTRIBUTE); return 0;
-    }
+      }
     if (s && !s->real) {
         if (!v) { SET_ERR(E_BAD_PARAMETER); return 0; }
         switch (a) {
@@ -2252,7 +2260,7 @@ EXPORT unsigned eglUnsignalSyncEXT(void* d, void* sync, const intptr_t* at) {
     return 1;
 }
 
-EXPORT unsigned eglSignalSyncKHR(void* d, void* sync, unsigned mode) {
+  EXPORT unsigned eglSignalSyncKHR(void* d, void* sync, unsigned mode) {
     (void)d;
     shim_sync* s = sync_find(sync);
     if (!s || !s->reusable) { SET_ERR(E_BAD_PARAMETER); return 0; }
@@ -2360,9 +2368,8 @@ EXPORT const char* eglQueryString(void* d, int name) {
             !has_token(nb, "EGL_KHR_create_context")) continue;
         if (!strcmp(x, "EGL_KHR_image_pixmap") &&
             (!has_token(nb, "EGL_KHR_image_base") || gbm_load())) continue;
-        if (!strcmp(x, "EGL_ANDROID_get_native_client_buffer") &&
-            (!has_token(nb, "EGL_ANDROID_image_native_buffer") ||
-             !glp("eglGetNativeClientBufferANDROID"))) continue;
+                if (!strcmp(x, "EGL_ANDROID_get_native_client_buffer") &&
+            (!has_token(nb, "EGL_ANDROID_image_native_buffer") || ahb_init() || !ahb_to_anwb)) continue;
         if (!strcmp(x, "EGL_KHR_reusable_sync") && !has_token(nb, "EGL_KHR_fence_sync")) continue;
         n += snprintf(nb + n, cap - n, "%s%s", n ? " " : "", x);
     }
@@ -2436,8 +2443,7 @@ static void surf_free_later(shim_surf* s) {
     pthread_mutex_unlock(&G.mu);
     free(old);
 }
-
-static void surf_release(shim_surf* s, int with_gl) {
+  static void surf_release(shim_surf* s, int with_gl) {
     if (s->is_gbm) gbm_teardown(s, with_gl);
     if (s->dmabuf_inited) dmabuf_teardown(s, with_gl);
     if (s->wsi) {
@@ -2447,7 +2453,7 @@ static void surf_release(shim_surf* s, int with_gl) {
     }
     __atomic_store_n(&s->magic, 0, __ATOMIC_RELEASE);
     surf_free_later(s);
-}
+  }
   
 EXPORT unsigned eglDestroySurface(void* d, void* surf) {
     if (shim_init()) return 0;
@@ -2464,14 +2470,14 @@ EXPORT unsigned eglDestroySurface(void* d, void* surf) {
         return f ? f(d, surf) : 0;
     }
 
-    /* wait for eglDestroyContext to finish teardown on this surface */
+    /* așteaptă ca eglDestroyContext să termine teardown-ul pe această suprafață */
     while (__atomic_load_n(&s->releasing, __ATOMIC_ACQUIRE)) usleep(100);
 
     void* (*cur)(void) = (void* (*)(void))rsym("eglGetCurrentContext");
     if (T_surf == s) T_surf = NULL;
     surf_release(s, cur && cur() == s->ctx);
     return 1;
-}
+  }
 
 EXPORT unsigned eglQuerySurface(void* d, void* surf, int attr, int* v) {
     shim_surf* s = find_surf(surf);
@@ -2527,7 +2533,7 @@ static void set_emu_ctx(void* ctx) {
 static int ctx_err(void) {
     int (*ge)(void) = rsym("eglGetError");
     int e = ge ? ge() : E_SUCCESS;
-    T_ctx_e = e;               /* do NOT write to T_err here */
+    T_ctx_e = e;               /* NU mai scrie în T_err aici */
     return e;
 }
   
@@ -2537,14 +2543,14 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
     if (!f) *(void**)&f = rsym("eglCreateContext");
     if (!f) return NULL;
     T_ctx_e = 0;
-    /* Generic filtering of all ANGLE attributes (0x3480 - 0x34FF) unsupported by Mali */
+    /* Filtrare generică a tuturor atributelor ANGLE (0x3480 - 0x34FF) nesuportate de Mali */
     int fil[64], fk = 0;
     for (const int* a = at; a && a[0] != E_NONE && fk < 60; a += 2) {
         if (a[0] >= 0x3480 && a[0] <= 0x34FF) {
             DBG("[shim] ctx attr 0x%x = 0x%x ignored (ANGLE)\n", a[0], a[1]);
             continue;
         }
-        if (a[0] == 0x31B3) {              /* NO_ERROR_KHR: only TRUE(1) / FALSE(0) */
+        if (a[0] == 0x31B3) {              /* NO_ERROR_KHR: doar TRUE(1) / FALSE(0) */
             if (a[1] != 0 && a[1] != 1) { 
                 SET_ERR(E_BAD_ATTRIBUTE); 
                 return NULL; 
@@ -2565,7 +2571,7 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
     fil[fk] = E_NONE;
     at = fil;
 
-    /* Log sanitized input attributes */
+    /* Logare atribute de intrare curățate */
     DBG("[shim] ctx request: g_gl_mapped=%d share=%p\n", g_gl_mapped, share);
     for (const int* a = at; a && a[0] != E_NONE; a += 2)
         DBG("[shim]   ctx attr 0x%x = 0x%x\n", a[0], a[1]);
@@ -2660,7 +2666,7 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
         }
     }
 
-    /* Propagate error only if context creation failed across all fallback paths */
+    /* Propagare eroare doar dacă crearea contextului a eșuat definitiv pe toate căile */
     if (!c && T_ctx_e != E_SUCCESS) {
         T_err = T_ctx_e;
         dbg_msg(T_ctx_e, "eglCreateContext", EGL_DEBUG_MSG_ERROR_KHR, 0, NULL,
@@ -2702,7 +2708,7 @@ EXPORT unsigned eglDestroyContext(void* d, void* ctx) {
     pthread_mutex_lock(&G.mu);
     for (shim_surf* s = G.surfs; s; s = s->next) {
         if (s->ctx != ctx) continue;
-        /* Skip surfaces already atomically claimed by eglDestroySurface */
+        /* Sari peste suprafețele deja revendicate atomic de eglDestroySurface */
         if (__atomic_exchange_n(&s->releasing, 1, __ATOMIC_ACQ_REL)) continue;
         s->ctx = NULL;
         s->rel_next = hit; 
@@ -2719,7 +2725,7 @@ EXPORT unsigned eglDestroyContext(void* d, void* ctx) {
         }
     pthread_mutex_unlock(&G.mu);
 
-    /* Lock-free teardown with next-pointer prefetch (nx) */
+    /* Teardown lock-free cu citire anticipată a succesorului (nx) */
     for (shim_surf* s = hit, *nx; s; s = nx) {
         nx = s->rel_next;
         if (s->is_gbm) gbm_teardown(s, 0);
@@ -3056,7 +3062,7 @@ static void vk_probe(void) {
     }
     if (di) di(inst, NULL);
 }
-  
+
 EXPORT unsigned eglQueryDeviceBinaryEXT(void* dev, int name, int max_size, void* value, int* size) {
     if (!is_valid_device(dev)) { SET_ERR(E_BAD_DEVICE_EXT); return 0; }
     if (shim_init()) { SET_ERR(E_BAD_DEVICE_EXT); return 0; }
@@ -3084,6 +3090,7 @@ EXPORT unsigned eglQueryDeviceBinaryEXT(void* dev, int name, int max_size, void*
     if (size) *size = n;
     return 1;
 }
+
 
 /* ---------- DRM nodes via libdrm (dlopen) ---------- */
 typedef struct { char** nodes; int available_nodes; } drm_dev_prefix;
@@ -3175,7 +3182,7 @@ EXPORT char* eglGetDisplayDriverConfig(void* d) {
 #define MAX_DPY 4
 static struct { void* d; int refs; } g_dref[MAX_DPY];
 
-static int dref_total(void) {          /* called with G.mu held */
+static int dref_total(void) {          /* apelat cu G.mu ținut */
     int t = 0;
     for (int i = 0; i < MAX_DPY; i++) t += g_dref[i].refs;
     return t;
@@ -3195,7 +3202,7 @@ EXPORT unsigned eglInitialize(void* d, int* maj, int* min) {
             if (k < 0 && !g_dref[i].refs) k = i;
         }
         if (k >= 0) { g_dref[k].d = d; g_dref[k].refs++; }
-        else DBG("[shim] eglInitialize: MAX_DPY (%d) reached, display %p not tracked\n", MAX_DPY, d);
+              else DBG("[shim] eglInitialize: MAX_DPY (%d) reached, display %p not tracked\n", MAX_DPY, d);
         pthread_mutex_unlock(&G.mu);
     }
     return r;
@@ -3318,7 +3325,7 @@ EXPORT unsigned eglExportDMABUFImageMESA(void* d, void* image, int* fds,
 
 EXPORT unsigned eglPostSubBufferNV(void* d, void* surf, int x, int y, int w, int h) {
     shim_surf* s = find_surf(surf);
-    if (!s) {                       /* pbuffer / Mali surface */
+    if (!s) {                       /* pbuffer / suprafață Mali */
         if (shim_init()) return 0;
         static unsigned (*f)(void*, void*, int, int, int, int);
         if (!f) *(void**)&f = rsym("eglPostSubBufferNV");
@@ -3327,8 +3334,13 @@ EXPORT unsigned eglPostSubBufferNV(void* d, void* surf, int x, int y, int w, int
     }
     if (x < 0 || y < 0 || w < 0 || h < 0) { SET_ERR(E_BAD_PARAMETER); return 0; }
     if (T_surf != s) { SET_ERR(E_BAD_CURRENT_SURF); return 0; }
-    if (w == 0 || h == 0 || x >= s->w || y >= s->h) return 1;  /* nothing to present */
+    if (w == 0 || h == 0 || x >= s->w || y >= s->h) return 1;  /* nimic de afișat */
     return eglSwapBuffers(d, surf);
+}
+
+EXPORT void* eglGetNativeClientBufferANDROID(const void* ahb) {
+    if (!ahb || ahb_init() || !ahb_to_anwb) { SET_ERR(E_BAD_PARAMETER); return NULL; }
+    return ahb_to_anwb((void*)ahb);
 }
   
 /* ---------- eglGetProcAddress ---------- */
@@ -3343,6 +3355,7 @@ EXPORT void* eglGetProcAddress(const char* name) {
         PA(eglCreatePlatformPixmapSurface), PA(eglCreatePbufferSurface),
         PA(eglDestroySurface), PA(eglQuerySurface), PA(eglSurfaceAttrib), 
         PA(eglDebugMessageControlKHR), PA(eglQueryDebugKHR), PA(eglLabelObjectKHR),
+        PA(eglGetNativeClientBufferANDROID),
         PA(eglQueryDevicesEXT), PA(eglUnsignalSyncEXT), PA(eglQueryDeviceBinaryEXT), PA(eglGetDisplayDriverName), PA(eglGetDisplayDriverConfig), PA(eglExportDMABUFImageQueryMESA), PA(eglExportDMABUFImageMESA), PA(eglCreateDRMImageMESA), PA(eglExportDRMImageMESA),
         PA(eglBindAPI), PA(eglQueryAPI), PA(eglWaitClient), PA(eglWaitGL), PA(eglWaitNative),
         PA(eglReleaseThread), PA(eglCreateContext), PA(eglDestroyContext), PA(eglMakeCurrent),
@@ -3368,11 +3381,11 @@ EXPORT void* eglGetProcAddress(const char* name) {
     }
     if (shim_init() || !G.gpa) return NULL;
     void* r = G.gpa(name);
-    if (!r) DBG("[shim] getproc MISS %s\n", name);
-    return r;
+if (!r) DBG("[shim] getproc MISS %s\n", name);
+return r;
 }
 
-__attribute__((destructor))
+  __attribute__((destructor))
 static void shim_atexit(void) {
     if (!G.ready || !shim_debug_enabled()) return;
     int n = 0;

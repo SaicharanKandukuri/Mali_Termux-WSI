@@ -39,7 +39,7 @@ static inline int gl_emul_debug_enabled(void) {
 static int emu_ver(void) { return (T_glx.ctx && !T_glx.ctx->es_native) ? T_glx.ctx->ver : 0; }
 
 /* ===== A) OpenGL 4.3 Spoofing Check ===== */
-static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43 };
+static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43, 44 };
 #define GL_EMU_COMPAT_ES1  15      /* ES1 ctx -> "1.5" */
 #define GL_EMU_COMPAT_ES2  21      /* ES2 ctx -> "2.1" */
 #define GL_EMU_COMPAT_ES3  32
@@ -109,11 +109,12 @@ static const char* gl_glsl_for(int g) {
         case 41:  return "4.10";
         case 42:  return "4.20"; 
         case 43:  return "4.30";
-        default:  return "1.20"; 
+        case 44:  return "4.40";
+        default:  return "1.50"; 
     }
 }
 
-static int gl43(void) { return gl_emu_ver() >= 43; }
+static int gl43(void) { return gl_emu_ver() >= 44; }
 
 /* ===== B) ARB extensions genuinely covered by ES 3.2 ===== */
 static const char* const emu_arb3[] = {
@@ -131,10 +132,13 @@ static const char* const emu_arb3[] = {
     "GL_ARB_texture_compression_bptc", "GL_ATI_meminfo", "GL_NVX_gpu_memory_info",
     "GL_EXT_blend_func_extended",
     "GL_ARB_clip_control", "GL_ARB_shader_draw_parameters",
-    "GL_ARB_compute_shader", "GL_EXT_memory_object", "GL_EXT_semaphore", "GL_ARB_shader_storage_buffer_object", "GL_ARB_shader_image_load_store",
+    "GL_EXT_memory_object", "GL_EXT_memory_object_fd",
+    "GL_EXT_semaphore", "GL_EXT_semaphore_fd", 
+    /* from here: last 12, only on 4.3+ (see EMU_N3) */
+    "GL_ARB_compute_shader", "GL_ARB_shader_storage_buffer_object", "GL_ARB_shader_image_load_store",
     "GL_ARB_shader_atomic_counters", "GL_ARB_program_interface_query", "GL_ARB_explicit_uniform_location",
     "GL_ARB_vertex_attrib_binding", "GL_ARB_framebuffer_no_attachments", "GL_ARB_texture_storage_multisample",
-    "GL_ARB_draw_indirect", "GL_ARB_ES3_1_compatibility", "GL_ARB_clear_buffer_object",
+    "GL_ARB_draw_indirect", "GL_ARB_ES3_1_compatibility", "GL_ARB_clear_buffer_object", "GL_ARB_direct_state_access", "GL_ARB_query_buffer_object",
 };
 
 #define EMU_ALL  ((int)(sizeof emu_arb3 / sizeof emu_arb3[0]))
@@ -2092,6 +2096,6 @@ GLC void glPrimitiveBoundingBoxARB(float minX, float minY, float minZ, float min
     if (p) ((O_pbb)p)(minX, minY, minZ, minW, maxX, maxY, maxZ, maxW);
 }
       
+#include "gl_dsa.c"     
 #include "gl_extmem.c"
 #include "gl_es_alias.c"
-

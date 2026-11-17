@@ -470,7 +470,7 @@ GLC void glDisable(unsigned cap) {
     dsb_on_enable(cap, 0);
 }
 
-static void dsa_note(unsigned tex, unsigned target);   /* sus, în gl_compat.c */
+static void dsa_note(unsigned tex, unsigned target);   
 
 GLC void glBindTexture(unsigned target, unsigned tex) {
     dsa_note(tex, target);
@@ -751,7 +751,7 @@ static float bm_floor(float f) { int i = (int)f; return (float)(f < (float)i ? i
 GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymove, const unsigned char* bm) {
     im_init();
     gl_warn_es("glBitmap");
-    if (IM.in_begin || IM.rec_id) return;              /* nu se inregistreaza in display lists */
+    if (IM.in_begin || IM.rec_id) return;             
     if (!g_rvalid) return;
 
     if (w > 0 && h > 0 && bm) {
@@ -759,13 +759,13 @@ GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymo
         if (al < 1) al = 4;
         int stride = ((((w + 7) / 8) + al - 1) / al) * al;
         size_t maxq = (size_t)h * (size_t)((w + 1) / 2);
-        if (maxq > 16384) maxq = 16384;                               /* limita im_draw: 65536 varfuri */
+        if (maxq > 16384) maxq = 16384;                              
         float* v = malloc(maxq * 12 * sizeof(float));
         size_t nq = 0;
         float bx = bm_floor(g_rasterx - xorig), by = bm_floor(g_rastery - yorig);
 
         for (int r = 0; r < h && v; r++) {
-            const unsigned char* row = bm + (size_t)r * stride;       /* randurile sunt de jos in sus */
+            const unsigned char* row = bm + (size_t)r * stride;      
             int x = 0;
             while (x < w) {
                 if (!((row[x >> 3] >> (7 - (x & 7))) & 1)) { x++; continue; }

@@ -470,7 +470,10 @@ GLC void glDisable(unsigned cap) {
     dsb_on_enable(cap, 0);
 }
 
+static void dsa_note(unsigned tex, unsigned target);   /* sus, în gl_compat.c */
+
 GLC void glBindTexture(unsigned target, unsigned tex) {
+    dsa_note(tex, target);
     target = t1d(target);                                  /* Convert GL_TEXTURE_1D -> GL_TEXTURE_2D */
     if (IM.rec_id) {
         gl_cmd* c = rec_cmd(OP_BINDTEX); c->u[0] = target; c->u[1] = tex;

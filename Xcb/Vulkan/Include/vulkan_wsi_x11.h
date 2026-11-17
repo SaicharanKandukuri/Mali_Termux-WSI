@@ -7,7 +7,8 @@
      VULKAN_SYNC=1       synchronous zero-copy (no presentation thread)
      VULKAN_NOVSYNC=1    ignores requested present mode: always presents ASYNC (like IMMEDIATE)
      VULKAN_DMABUF=1     zero-copy using "system" dma-buf heap (libdmabufheap.so), without AHB
-     VULKAN_DMABUF=name  same, using another heap (e.g. system-uncached)                     */
+     VULKAN_DMABUF=name  same, using another heap (e.g. system-uncached)
+     VULKAN_NOSHM=1      disables MIT-SHM for CPU copy                                         */
 
 #ifndef VK_USE_PLATFORM_XCB_KHR
 #define VK_USE_PLATFORM_XCB_KHR
@@ -29,9 +30,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <xcb/xcb.h>
-#include <xcb/xcbext.h>
 #include <xcb/dri3.h>
 #include <xcb/present.h>
+#include <xcb/shm.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 #include <android/hardware_buffer.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -50,14 +53,9 @@
 #endif
 
 #define WSI_MAX_IMG 8
-#define WSI_MAX_LY  8
 
 #ifndef AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM
 #define AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM 5
-#endif
-
-#ifndef AHARDWAREBUFFER_USAGE_VENDOR_3
-#define AHARDWAREBUFFER_USAGE_VENDOR_3 (1ULL << 51)
 #endif
 
 static const char* const wsi_dev_exts[] = {
@@ -180,6 +178,10 @@ typedef struct {
     VkCommandBuffer cmd[WSI_MAX_IMG];
     VkCommandPool   pool;
     VkFence         fence;
+    /* MIT-SHM (CPU copy) */
+    xcb_shm_seg_t   shm_seg;
+    uint8_t*        shm_ptr;
+    size_t          shm_size;
     /* Asynchronous presentation */
     int             async, quit;
     pthread_t       th;
@@ -196,6 +198,7 @@ typedef struct {
     int             stale;          /* window size has changed */
     int             gck_pending;
     xcb_get_geometry_cookie_t gck;
+    uint64_t        gck_t;
 } wsi_swapchain;
 
 #define WSI_H2P(h) ((void*)(uintptr_t)(h))
@@ -263,9 +266,8 @@ static int wsi_clamp_features(VkPhysicalDeviceFeatures* req, const VkPhysicalDev
 }
 
 /* =====================  WSI LAYER CHAIN  ===================== */
-#ifndef WSI_DEFAULT_LAYER_DIR
-#define WSI_DEFAULT_LAYER_DIR "/data/data/com.termux/files/home/Mali_Termux-WSI/Layers"
-#endif
+#define WSI_MAX_LY 16
+#define WSI_DEFAULT_LAYER_DIR "/data/data/com.termux/files/home/Mali_Desktop/Vulkan/Debug"
 
 static struct {
     void* h; char name[VK_MAX_EXTENSION_NAME_SIZE];
@@ -369,35 +371,31 @@ static int wsi_ly_try(const char* dir, const char* want) {
 
 static void wsi_ly_add(const char* name) {
     const char* paths = getenv("VK_LAYER_PATH");
-    
-    if (!paths || !*paths) {
-        paths = WSI_DEFAULT_LAYER_DIR;
-    }
+    if (!paths || !*paths) paths = WSI_DEFAULT_LAYER_DIR;
 
-char* cp = strdup(paths);
-char* sp = NULL;
-for (char* t = strtok_r(cp, ":", &sp); t; t = strtok_r(NULL, ":", &sp)) {
-    if (wsi_ly_try(t, name)) break;
-}
-free(cp);
+    char* cp = strdup(paths);
+    if (!cp) return;
+    char* sp = NULL;
+    for (char* t = strtok_r(cp, ":", &sp); t; t = strtok_r(NULL, ":", &sp)) {
+        if (wsi_ly_try(t, name)) break;
+    }
+    free(cp);
 }
 
 static void wsi_ly_load(const VkInstanceCreateInfo* ci) {
     g_nly = 0;
     for (uint32_t i = 0; i < ci->enabledLayerCount; i++) wsi_ly_add(ci->ppEnabledLayerNames[i]);
     const char* env = getenv("VK_INSTANCE_LAYERS");
-if (env && *env) {
-    char* cp = strdup(env);
-    char* sp = NULL;
-    for (char* t = strtok_r(cp, ":,", &sp); t; t = strtok_r(NULL, ":,", &sp)) {
-        while (*t == ' ') t++;
-        if (*t) wsi_ly_add(t);
-    }
-    free(cp);
-}
-
-    if (!g_nly && (ci->enabledLayerCount || (env && *env))) {
-        fprintf(stderr, "vulkan_warning: requested layers not found, running without\n");
+    if (env && *env) {
+        char* cp = strdup(env);
+        if (cp) {
+            char* sp = NULL;
+            for (char* t = strtok_r(cp, ":,", &sp); t; t = strtok_r(NULL, ":,", &sp)) {
+                while (*t == ' ') t++;
+                if (*t) wsi_ly_add(t);
+            }
+            free(cp);
+        }
     }
 }
 
@@ -476,9 +474,8 @@ static VkResult VKAPI_CALL wsi_GetPDSurfaceCapabilitiesKHR(VkPhysicalDevice pd,
 static const VkSurfaceFormatKHR wsi_surf_fmts[] = {
     { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR },
     { VK_FORMAT_B8G8R8A8_SRGB,  VK_COLOR_SPACE_SRGB_NONLINEAR_KHR },
-    { VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR },
-    { VK_FORMAT_R8G8B8A8_SRGB,  VK_COLOR_SPACE_SRGB_NONLINEAR_KHR },
 };
+
 #define WSI_N_SURF_FMTS (sizeof wsi_surf_fmts / sizeof wsi_surf_fmts[0])
 
 static VkResult VKAPI_CALL wsi_GetPDSurfaceFormatsKHR(VkPhysicalDevice pd,
@@ -526,9 +523,72 @@ static void wsi_setup(wsi_swapchain* s, VkDevice dev, const VkSwapchainCreateInf
     }
 }
 
+static int wsi_memfd(size_t len) {
+    int fd = -1;
+#ifdef SYS_memfd_create
+    fd = (int)syscall(SYS_memfd_create, "wsi-shm", 1u /* MFD_CLOEXEC */);
+#endif
+    if (fd < 0) return -1;
+    if (ftruncate(fd, (off_t)len) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static void wsi_shm_setup(wsi_swapchain* s) {
+    xcb_connection_t* cn = s->surf->conn;
+    if (getenv("VULKAN_NOSHM")) return;
+
+    xcb_shm_query_version_reply_t* v =
+        xcb_shm_query_version_reply(cn, xcb_shm_query_version(cn), NULL);
+    if (!v) return;
+    int ok = v->major_version > 1 || (v->major_version == 1 && v->minor_version >= 2);
+    free(v);
+    if (!ok) {
+        if (wsi_dbg_enabled())
+            fprintf(stderr, "vulkan_debug: MIT-SHM < 1.2 (no fd passing), using put_image\n");
+        return;
+    }
+
+    size_t len = (size_t)s->ext.width * s->ext.height * 4;
+    int fd = wsi_memfd(len);
+    if (fd < 0) return;
+
+    void* p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) { close(fd); return; }
+
+    int sfd = dup(fd);
+    close(fd);
+    if (sfd < 0) { munmap(p, len); return; }
+
+    xcb_shm_seg_t seg = xcb_generate_id(cn);
+    xcb_generic_error_t* err = xcb_request_check(cn,
+        xcb_shm_attach_fd_checked(cn, seg, sfd, 0));
+    if (err) {
+        if (wsi_dbg_enabled())
+            fprintf(stderr, "vulkan_debug: shm attach_fd rejected (X error %d), using put_image\n",
+                    err->error_code);
+        free(err);
+        munmap(p, len);
+        return;
+    }
+    s->shm_seg = seg;
+    s->shm_ptr = (uint8_t*)p;
+    s->shm_size = len;
+    if (wsi_dbg_enabled()) fprintf(stderr, "vulkan_debug: CPU copy via MIT-SHM\n");
+}
+
+static void wsi_shm_free(wsi_swapchain* s) {
+    if (!s->shm_ptr) return;
+    xcb_shm_detach(s->surf->conn, s->shm_seg);
+    xcb_flush(s->surf->conn);
+    munmap(s->shm_ptr, s->shm_size);
+    s->shm_ptr = NULL;
+    s->shm_seg = 0;
+}
+
 static void wsi_release(wsi_swapchain* s) {
     VkDevice d = s->dev;
     w.DeviceWaitIdle(d);
+    wsi_shm_free(s);
     if (s->gck_pending) {
         xcb_discard_reply(s->surf->conn, s->gck.sequence);
         s->gck_pending = 0;
@@ -582,14 +642,20 @@ static VkResult wsi_wait_fd(int fd) {
     return pr > 0 ? VK_SUCCESS : VK_TIMEOUT;
 }
 
+#define WSI_MAX_INFLIGHT 2
 #define WSI_COMP_TIMEOUT_NS 250000000ull
+#define WSI_QUIT_SERIAL 0xFFFFFFF0u
 
 typedef struct {
+    wsi_swapchain*       s;
     xcb_special_event_t* se;
-    uint32_t eid;
-    int      use_comp;
-    int      inflight;
-    uint64_t last_msc, t_pres;
+    uint32_t             eid;
+    int                  use_comp;
+    int                  inflight;
+    uint64_t             last_msc;
+    uint64_t             t_pres;
+    pthread_t            th;
+    int                  th_on;
 } wsi_comp;
 
 static uint64_t wsi_now_ns(void) {
@@ -608,57 +674,43 @@ static void wsi_comp_close(wsi_swapchain* s, wsi_comp* id) {
     id->se = NULL;
 }
 
-static void wsi_ev_drain(wsi_swapchain* s, wsi_comp* id) {
-    xcb_connection_t* cn = s->surf->conn;
+static void* wsi_ev_thread(void* arg) {
+    wsi_comp* id = (wsi_comp*)arg;
+    wsi_swapchain* s = id->s;
     xcb_generic_event_t* e;
-    while ((e = xcb_poll_for_special_event(cn, id->se))) {
-        if (((xcb_present_generic_event_t*)e)->evtype == XCB_PRESENT_EVENT_COMPLETE_NOTIFY) {
-            xcb_present_complete_notify_event_t* c = (xcb_present_complete_notify_event_t*)e;
+
+    while ((e = xcb_wait_for_special_event(s->surf->conn, id->se))) {
+        xcb_present_generic_event_t* g = (xcb_present_generic_event_t*)e;
+        if (g->evtype == XCB_PRESENT_EVENT_COMPLETE_NOTIFY) {
+            xcb_present_complete_notify_event_t* c =
+                (xcb_present_complete_notify_event_t*)e;
+            if (c->kind == XCB_PRESENT_COMPLETE_KIND_NOTIFY_MSC &&
+                c->serial == WSI_QUIT_SERIAL) {
+                free(e);
+                break;
+            }
             if (c->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
+                pthread_mutex_lock(&s->mu);
                 if (id->inflight > 0) id->inflight--;
                 id->last_msc = c->msc;
-                pthread_mutex_lock(&s->mu);
-                if (c->serial < s->n && s->state[c->serial] == 3) s->state[c->serial] = 0;
+                if (c->serial < s->n && s->state[c->serial] == 3)
+                    s->state[c->serial] = 0;
                 pthread_cond_broadcast(&s->cv);
                 pthread_mutex_unlock(&s->mu);
             }
         }
         free(e);
     }
+    return NULL;
 }
 
-static void wsi_ev_service(wsi_swapchain* s, wsi_comp* id, int wait_ms) {
+static void wsi_ev_thread_stop(wsi_swapchain* s, wsi_comp* id) {
+    if (!id->th_on) return;
     xcb_connection_t* cn = s->surf->conn;
-    if (id->se) {
-        int infl = id->inflight;
-        wsi_ev_drain(s, id);
-        if (id->inflight == infl) {
-            struct pollfd p[2] = { { xcb_get_file_descriptor(cn), POLLIN, 0 },
-                                   { s->wfd, POLLIN, 0 } };
-            int pr;
-            do { pr = poll(p, 2, wait_ms); } while (pr < 0 && errno == EINTR);
-            if (pr > 0 && (p[1].revents & POLLIN)) {
-                uint64_t v;
-                if (read(s->wfd, &v, sizeof v) < 0) { }
-            }
-            if (pr > 0 && (p[0].revents & POLLIN)) {
-                free(xcb_get_input_focus_reply(cn, xcb_get_input_focus(cn), NULL));
-                wsi_ev_drain(s, id);
-            }
-        }
-    }
-    if (id->inflight > 0 && wsi_now_ns() - id->t_pres > WSI_COMP_TIMEOUT_NS) {
-        id->inflight = 0;
-        id->use_comp = 0;
-        if (wsi_dbg_enabled()) {
-            fprintf(stderr, "vulkan_debug: no PresentCompleteNotify within 250 ms, vsync gating disabled\n");
-        }
-        pthread_mutex_lock(&s->mu);
-        for (uint32_t i = 0; i < s->n; i++) if (s->state[i] == 3) s->state[i] = 0;
-        pthread_cond_broadcast(&s->cv);
-        pthread_mutex_unlock(&s->mu);
-    }
-    if (!id->use_comp) wsi_comp_close(s, id);
+    xcb_present_notify_msc(cn, s->surf->win, WSI_QUIT_SERIAL, 0, 0, 0);
+    xcb_flush(cn);
+    pthread_join(id->th, NULL);
+    id->th_on = 0;
 }
 
 static void* wsi_worker(void* arg) {
@@ -695,7 +747,18 @@ static void* wsi_worker(void* arg) {
     }
     free(pv);
 
+    id.s = s;
+    if (id.use_comp) {
+        if (pthread_create(&id.th, NULL, wsi_ev_thread, &id)) {
+            id.use_comp = 0;
+            wsi_comp_close(s, &id);
+        } else {
+            id.th_on = 1;
+        }
+    }
+
     for (;;) {
+        uint64_t tnow = wsi_now_ns();
         if (s->gck_pending) {
             xcb_get_geometry_reply_t* g = xcb_get_geometry_reply(cn, s->gck, NULL);
             s->gck_pending = 0;
@@ -704,20 +767,35 @@ static void* wsi_worker(void* arg) {
                     __atomic_store_n(&s->stale, 1, __ATOMIC_RELAXED);
                 free(g);
             }
-        } else {
+        } else if (tnow - s->gck_t >= 100000000ull) {
             s->gck = xcb_get_geometry(cn, s->surf->win);
             s->gck_pending = 1;
+            s->gck_t = tnow;
         }
 
         pthread_mutex_lock(&s->mu);
         for (;;) {
             if (s->quit) break;
-            int gated = id.use_comp && id.inflight > 0;
+            int gated = id.use_comp && id.inflight >= WSI_MAX_INFLIGHT;
             if (s->qn > 0 && !gated) break;
-            if (id.inflight > 0) {
-                pthread_mutex_unlock(&s->mu);
-                wsi_ev_service(s, &id, 4);
-                pthread_mutex_lock(&s->mu);
+
+            if (id.use_comp && id.inflight > 0) {
+                uint64_t el = wsi_now_ns() - id.t_pres;
+                if (el >= WSI_COMP_TIMEOUT_NS) {
+                    id.inflight = 0;
+                    id.use_comp = 0;
+                    if (wsi_dbg_enabled())
+                        fprintf(stderr, "vulkan_debug: no PresentCompleteNotify "
+                                        "within 250 ms, vsync gating disabled\n");
+                    for (uint32_t i = 0; i < s->n; i++)
+                        if (s->state[i] == 3) s->state[i] = 0;
+                    pthread_cond_broadcast(&s->cv);
+                    continue;
+                }
+                uint64_t dl_ns = id.t_pres + WSI_COMP_TIMEOUT_NS;
+                struct timespec dl = { (time_t)(dl_ns / 1000000000ull),
+                                       (long)(dl_ns % 1000000000ull) };
+                pthread_cond_timedwait(&s->cv, &s->mu, &dl);
             } else {
                 pthread_cond_wait(&s->cv, &s->mu);
             }
@@ -755,8 +833,12 @@ static void* wsi_worker(void* arg) {
             if (use_present) {
                 uint32_t opt = XCB_PRESENT_OPTION_COPY;
                 uint64_t target = 0;
-                if (!vsync)           opt |= XCB_PRESENT_OPTION_ASYNC;
-                else if (id.use_comp) target = id.last_msc + 1;
+                if (!vsync) opt |= XCB_PRESENT_OPTION_ASYNC;
+                else {
+                    pthread_mutex_lock(&s->mu);
+                    if (id.use_comp) target = id.last_msc + id.inflight + 1;
+                    pthread_mutex_unlock(&s->mu);
+                }
 
                 xcb_present_pixmap(cn, s->surf->win, s->pm[idx], (uint32_t)idx,
                                    XCB_NONE, XCB_NONE, 0, 0,
@@ -786,6 +868,7 @@ static void* wsi_worker(void* arg) {
     }
     pthread_mutex_unlock(&s->mu);
 
+    wsi_ev_thread_stop(s, &id);
     wsi_comp_close(s, &id);
     return NULL;
 }
@@ -972,13 +1055,13 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     if ((r = w.CreateFence(dev, &fci, NULL, &s->fence))) return r;
 
-        uint64_t ahb_usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+    uint64_t ahb_usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                          AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
     const char* lm = getenv("VULKAN_AHB_LINEAR");
     if (lm && !strcmp(lm, "vendor3"))
         ahb_usage |= AHARDWAREBUFFER_USAGE_VENDOR_3;
     else if (lm && !strcmp(lm, "none"))
-        ;   /* GPU only: gralloc poate alege AFBC */
+        ;   /* GPU only */
     else
         ahb_usage |= AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
 
@@ -992,7 +1075,7 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
                            ? AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM 
                            : AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
 
-                AHardwareBuffer_Desc d = {
+        AHardwareBuffer_Desc d = {
             .width  = s->ext.width,
             .height = s->ext.height,
             .layers = 1,
@@ -1005,7 +1088,7 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
         const wsi_nh_t* nh = g_ahb.nh(s->ahb[i]);
         if (!nh) return VK_ERROR_INITIALIZATION_FAILED;
 
-                for (int k = 0; k < nh->numFds && !s->pm[i]; k++) {
+        for (int k = 0; k < nh->numFds && !s->pm[i]; k++) {
             off_t real = lseek(nh->data[k], 0, SEEK_END);
             lseek(nh->data[k], 0, SEEK_SET);
             if (wsi_dbg_enabled())
@@ -1074,7 +1157,11 @@ static VkResult wsi_build_zc(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* c
         for (uint32_t i = 0; i < s->n; i++)
             if ((r = w.CreateSemaphore(dev, &xsci, NULL, &s->isemaphore[i]))) return r;
         pthread_mutex_init(&s->mu, NULL);
-        pthread_cond_init(&s->cv, NULL);
+        pthread_condattr_t ca;
+        pthread_condattr_init(&ca);
+        pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+        pthread_cond_init(&s->cv, &ca);
+        pthread_condattr_destroy(&ca);
         s->wfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (pthread_create(&s->th, NULL, wsi_worker, s)) {
             if (s->wfd >= 0) { close(s->wfd); s->wfd = -1; }
@@ -1097,6 +1184,7 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
     if ((r = w.CreateFence(dev, &fci, NULL, &s->fence))) return r;
 
     VkDeviceSize bsize = (VkDeviceSize)s->ext.width * s->ext.height * 4;
+    s->coherent = 1;
 
     int mut = (ci->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0;
     VkImageFormatListCreateInfo mfl; int have_mfl = 0;
@@ -1133,21 +1221,13 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
         if ((r = w.CreateBuffer(dev, &bci, NULL, &s->buf[i]))) return r;
         VkMemoryRequirements br; w.GetBufferMemoryRequirements(dev, s->buf[i], &br);
-        
         uint32_t bt = wsi_find_mem(br.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-        s->coherent = 0;
-        if (bt == UINT32_MAX) {
-            bt = wsi_find_mem(br.memoryTypeBits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            s->coherent = 1;
-        }
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (bt == UINT32_MAX) {
             s->coherent = 0;
             bt = wsi_find_mem(br.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         }
         if (bt == UINT32_MAX) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-
         VkMemoryAllocateInfo bai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = br.size, .memoryTypeIndex = bt };
         if ((r = w.AllocateMemory(dev, &bai, NULL, &s->bmem[i]))) return r;
@@ -1191,6 +1271,7 @@ static VkResult wsi_build_cpu(wsi_swapchain* s, const VkSwapchainCreateInfoKHR* 
         if ((r = w.EndCommandBuffer(s->cmd[i]))) return r;
     }
     s->zc = 0;
+    wsi_shm_setup(s);
     return VK_SUCCESS;
 }
 
@@ -1229,7 +1310,7 @@ static VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice dev,
         const char* src = g_dh.on ? "dma-buf" : "AHB";
         char mode[64];
         if (s->zc) snprintf(mode, sizeof mode, "ZERO-COPY %s (%s + DRI3)", s->async ? "async" : "sync", src);
-        else       snprintf(mode, sizeof mode, "CPU copy");
+        else       snprintf(mode, sizeof mode, "CPU copy%s", s->shm_ptr ? " (MIT-SHM)" : "");
         fprintf(stderr, "vulkan_debug: mode %s, %u images %ux%u\n", mode, s->n, s->ext.width, s->ext.height);
     }
     *out = (VkSwapchainKHR)(uintptr_t)s;
@@ -1255,6 +1336,14 @@ static VkResult VKAPI_CALL wsi_GetSwapchainImagesKHR(VkDevice d, VkSwapchainKHR 
     return r;
 }
 
+static int wsi_pick_free(wsi_swapchain* s) {
+    for (uint32_t j = 0; j < s->n; j++) {
+        uint32_t k = (s->next + j) % s->n;
+        if (s->state[k] == 0) return (int)k;
+    }
+    return -1;
+}
+
 static VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR sc,
         uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t* idx) {
     (void)d;
@@ -1263,27 +1352,27 @@ static VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR sc
 
     if (s->async) {
         pthread_mutex_lock(&s->mu);
-        uint32_t k = s->next;
-        if (s->state[k] != 0) {
+        int k = wsi_pick_free(s);
+        if (k < 0) {
             if (timeout == 0) { pthread_mutex_unlock(&s->mu); return VK_NOT_READY; }
             struct timespec dl = { 0, 0 };
             if (timeout != UINT64_MAX) {
                 uint64_t ns = timeout > 60000000000ull ? 60000000000ull : timeout;
-                clock_gettime(CLOCK_REALTIME, &dl);
+                clock_gettime(CLOCK_MONOTONIC, &dl);
                 dl.tv_sec  += (time_t)(ns / 1000000000ull);
                 dl.tv_nsec += (long)(ns % 1000000000ull);
                 if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
             }
-            while (s->state[k] != 0) {
+            while ((k = wsi_pick_free(s)) < 0) {
                 int e = timeout == UINT64_MAX ? pthread_cond_wait(&s->cv, &s->mu)
                                               : pthread_cond_timedwait(&s->cv, &s->mu, &dl);
                 if (e == ETIMEDOUT) { pthread_mutex_unlock(&s->mu); return VK_TIMEOUT; }
             }
         }
         s->state[k] = 1;
-        s->next = (k + 1) % s->n;
+        s->next = ((uint32_t)k + 1) % s->n;
         pthread_mutex_unlock(&s->mu);
-        *idx = k;
+        *idx = (uint32_t)k;
     } else {
         *idx = s->next;
         s->next = (s->next + 1) % s->n;
@@ -1298,6 +1387,19 @@ static VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR sc
 
 static void wsi_put(wsi_swapchain* s, const uint8_t* px) {
     wsi_surface* sf = s->surf;
+
+    if (s->shm_ptr) {
+        memcpy(s->shm_ptr, px, s->shm_size);
+xcb_shm_put_image(sf->conn, sf->win, sf->gc,
+                  s->ext.width, s->ext.height,
+                  0, 0, s->ext.width, s->ext.height,
+                  0, 0, 24, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                  0 /* send_event */, s->shm_seg, 0 /* offset */);
+        xcb_flush(sf->conn);
+        free(xcb_get_input_focus_reply(sf->conn, xcb_get_input_focus(sf->conn), NULL));
+        return;
+    }
+
     uint32_t stride = s->ext.width * 4;
     uint32_t maxb = xcb_get_maximum_request_length(sf->conn) * 4;
     maxb = maxb > 64 ? maxb - 64 : maxb;
@@ -1350,7 +1452,8 @@ static VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR
             .pCommandBuffers = s->zc ? NULL : &s->cmd[idx] };
 
         if (s->async) {
-            r = w.QueueSubmit(q, 1, &si, VK_NULL_HANDLE);
+            VkFence sf = (pi->swapchainCount == 1) ? pf : VK_NULL_HANDLE;
+            r = w.QueueSubmit(q, 1, &si, sf);
             s->sfd[idx] = -2;
             if (!r) {
                 VkSemaphoreGetFdInfoKHR gi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
@@ -1373,7 +1476,8 @@ static VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR
                 pthread_cond_broadcast(&s->cv);
                 pthread_mutex_unlock(&s->mu);
             }
-            wsi_signal_present_fence(q, pf);
+            
+            if (!sf || r) wsi_signal_present_fence(q, pf);
             if (pi->pResults) pi->pResults[i] = r;
             if (r && (!worst || (r < 0 && worst > 0))) worst = r;
             continue;
@@ -1645,18 +1749,15 @@ static VkResult VKAPI_CALL wsi_EnumerateDeviceExtensionProperties(VkPhysicalDevi
 static PFN_vkVoidFunction VKAPI_CALL wsi_real_driver_gipa(VkInstance instance, const char* pName) {
     if (!pName) return NULL;
     
-    /* 1. vkCreateInstance from HAL */
     if (!strcmp(pName, "vkCreateInstance")) {
         return (PFN_vkVoidFunction)g_c->hal->CreateInstance;
     }
 
-    /* 2. vkCreateDevice from HAL/gipa */
     if (!strcmp(pName, "vkCreateDevice")) {
         VkInstance inst = instance ? instance : (g_c ? g_c->inst : VK_NULL_HANDLE);
         return g_real_gipa ? g_real_gipa(inst, "vkCreateDevice") : NULL;
     }
     
-    /* 3. Any other instance function */
     VkInstance inst = instance ? instance : (g_c ? g_c->inst : VK_NULL_HANDLE);
     return g_real_gipa ? g_real_gipa(inst, pName) : NULL;
 }
@@ -1760,7 +1861,6 @@ static VkResult VKAPI_CALL wsi_CreateInstance(const VkInstanceCreateInfo* ci,
     return r;
 }
 
-/* Common bookkeeping after the real vkCreateDevice succeeded */
 static VkResult wsi_device_created(VkPhysicalDevice pd, const VkDeviceCreateInfo* ci, VkDevice dev) {
     g_c->pd  = pd;
     g_c->dev = dev;
@@ -1774,7 +1874,6 @@ static VkResult wsi_device_created(VkPhysicalDevice pd, const VkDeviceCreateInfo
 
 static VkResult VKAPI_CALL wsi_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo* ci,
         const VkAllocationCallbacks* a, VkDevice* out) {
-    /* ---- 1. Extensions: strip virtual ones, add what zero-copy needs ---- */
     PFN_vkEnumerateDeviceExtensionProperties edep = (PFN_vkEnumerateDeviceExtensionProperties)
         g_real_gipa(g_c->inst, "vkEnumerateDeviceExtensionProperties");
     uint32_t nd = 0; edep(pd, NULL, &nd, NULL);
@@ -1798,7 +1897,6 @@ static VkResult VKAPI_CALL wsi_CreateDevice(VkPhysicalDevice pd, const VkDeviceC
     c2.enabledExtensionCount = ne;
     c2.ppEnabledExtensionNames = ext;
 
-    /* ---- 2. Features: clamp to what the hardware really supports (copies only) ---- */
     VkPhysicalDeviceFeatures  hw, f1;
     VkPhysicalDeviceFeatures2 f2;
     wsi_hw_features(pd, &hw);
@@ -1810,10 +1908,9 @@ static VkResult VKAPI_CALL wsi_CreateDevice(VkPhysicalDevice pd, const VkDeviceC
 
     const VkBaseInStructure* head = (const VkBaseInStructure*)c2.pNext;
     if (head && head->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-        f2 = *(const VkPhysicalDeviceFeatures2*)head;   /* keeps its own pNext chain */
+        f2 = *(const VkPhysicalDeviceFeatures2*)head;
         if (wsi_clamp_features(&f2.features, &hw)) c2.pNext = &f2;
     } else if (wsi_dbg_enabled()) {
-        /* Features2 deeper in the chain cannot be copied safely (unknown struct sizes) */
         for (const VkBaseInStructure* p = head; p; p = p->pNext)
             if (p->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
                 fprintf(stderr, "vulkan_debug: VkPhysicalDeviceFeatures2 is not first in pNext, not clamped\n");
@@ -1821,7 +1918,6 @@ static VkResult VKAPI_CALL wsi_CreateDevice(VkPhysicalDevice pd, const VkDeviceC
             }
     }
 
-    /* ---- 3. No layers: call the real driver directly ---- */
     if (!g_nly) {
         PFN_vkCreateDevice real = (PFN_vkCreateDevice)g_real_gipa(g_c->inst, "vkCreateDevice");
         VkResult r = real(pd, &c2, a, out);
@@ -1832,7 +1928,6 @@ static VkResult VKAPI_CALL wsi_CreateDevice(VkPhysicalDevice pd, const VkDeviceC
         return wsi_device_created(pd, ci, *out);
     }
 
-    /* ---- 4. With layers: build the device chain ---- */
     for (int i = 0; i < g_nly; i++) {
         PFN_vkGetDeviceProcAddr g = (PFN_vkGetDeviceProcAddr)g_ly[i].gipa(g_ly_inst, "vkGetDeviceProcAddr");
         if (g) g_ly[i].gdpa = g;
@@ -2054,7 +2149,6 @@ static PFN_vkVoidFunction VKAPI_CALL wsi_core_gdpa(VkDevice d, const char* n) {
     return f;
 }
 
-
 static PFN_vkVoidFunction VKAPI_CALL wsi_gipa(VkInstance i, const char* n) {
     if (!n) return NULL;
     if (!strcmp(n, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)wsi_gipa;
@@ -2124,7 +2218,7 @@ static int wsi_load(mali_ctx* c) {
     return 0;
 }
 
-static __attribute__((unused)) int wsi_install(mali_ctx* c) {
+static int wsi_install(mali_ctx* c) {
     g_c = c;
     g_real_gipa = c->gipa;
     g_real_gdpa = c->gdpa;

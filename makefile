@@ -19,7 +19,7 @@ VK_DIR  := Xcb/Vulkan
 VK_SRC  := $(VK_DIR)/Scripts/libvulkan.c
 VK_DEPS := $(wildcard $(VK_DIR)/Include/*)
 VK_OUT  := $(BUILD)/libvulkan.so.1
-VK_LIBS := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
+VK_LIBS := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread -lxcb-shm
 
 # make XLIB=1  -> Xlib support
 ifeq ($(XLIB),1)

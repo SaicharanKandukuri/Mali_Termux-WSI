@@ -257,13 +257,13 @@ and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 | Source (in priority order) | Result |
 |---|---|
 | `GLX_ES=1\|2\|3` | forced |
-| `GLX_GL` (e.g. `21`, `33`, `43`) | `<20` → ES1, `>=30` → ES3 |
+| `GLX_GL` (e.g. `21`, `33`, `44`) | `<20` → ES1, `>=30` → ES3 |
 | `glXCreateContextAttribsARB` | ES profile, or major 1 → ES1, major ≥3 → ES3 |
 | Imported symbols of the app | fixed-function only → ES1, shaders → ES2/3 |
 | Fallback | ES2 (`GLX_DEFAULT_ES=3` for ES3) |
 
 Fixed-function applications run on ES1; shader applications on ES3, with
-the reported version up to GL 4.3.
+the reported version up to GL 4.4.
 
 ### Environment variables
 
@@ -295,7 +295,7 @@ the reported version up to GL 4.3.
 - **Fixed function:** `glBegin/glEnd` become client-side vertex arrays
   (QUADS → triangles); display lists record and replay commands; `glDrawPixels`
   and `glBitmap` are drawn with textured/solid quads.
-- **GLSL:** GLSL 1.10–4.30 is translated to GLSL ES 1.00 / 3.20; `sampler1D`,
+- **GLSL:** GLSL 1.10–4.40 is translated to GLSL ES 1.00 / 3.20; `sampler1D`,
   `sampler2DRect`, `sampler1DArray`, `gl_ClipDistance` and dual-source
   outputs are rewritten. Shaders that fail on int→float conversions are
   recompiled with promoted literals.

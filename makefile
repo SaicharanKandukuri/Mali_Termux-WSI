@@ -1,5 +1,5 @@
-# Android API level. 31 = Android 12+ (portable), 34 = Android 14
-TARGET  ?= aarch64-linux-android31
+# Android API 
+TARGET  ?= aarch64-linux-android28
 
 ifeq ($(origin CC),default)
 CC := clang

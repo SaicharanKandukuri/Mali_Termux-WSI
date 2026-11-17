@@ -124,7 +124,7 @@ gl:     $(GL_OUT)
 $(VK_OUT): $(VK_SRC) $(VK_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(VK_FLAGS) -shared -Wl,-soname,libvulkan.so.1 $< -o $@ $(LDFLAGS) $(VK_LIBS)
-	ln -sf libvulkan.so.1 $(BUILD)/libvulkan.so
+	cp libvulkan.so.1 $(BUILD)/libvulkan.so
 
 $(BUILD)/glu/%.o: %.c
 	@mkdir -p $(@D)
@@ -132,7 +132,7 @@ $(BUILD)/glu/%.o: %.c
 
 $(GLU_OUT): $(GLU_OBJ) | $(GL_OUT)
 	$(CC) $(LDFLAGS) -shared -Wl,-soname,libGLU.so.1 $^ -o $@ -lGL -lm
-	ln -sf libGLU.so.1 $(BUILD)/libGLU.so
+	cp libGLU.so.1 $(BUILD)/libGLU.so
 
 $(BUILD)/glut/%.o: %.c
 	@mkdir -p $(@D)
@@ -140,22 +140,22 @@ $(BUILD)/glut/%.o: %.c
 
 $(GLUT_OUT): $(GLUT_OBJ) | $(GL_OUT)
 	$(CC) $(LDFLAGS) -shared -Wl,-soname,libglut.so.3 $^ -o $@ -lGL -lX11 -lm -ldl
-	ln -sf libglut.so.3 $(BUILD)/libglut.so
+	cp libglut.so.3 $(BUILD)/libglut.so
 
 $(GLFW_OUT): $(GLFW_SRC) $(wildcard src/glfw/include/GLFW/*.h) | $(EGL_OUT)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(GLFW_CFLAGS) -shared -Wl,-soname,libglfw.so.3 $(GLFW_SRC) -o $@ $(LDFLAGS) $(GLFW_LIBS)
-	ln -sf libglfw.so.3 $(BUILD)/libglfw.so
+	cp libglfw.so.3 $(BUILD)/libglfw.so
 
 $(GBM_OUT): $(GBM_SRC)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(GBM_DEFS) -shared -Wl,-soname,libgbm.so.1 $^ -o $@ $(LDFLAGS) -ldl -lnativewindow
-	ln -sf libgbm.so.1 $(BUILD)/libgbm.so
+	cp libgbm.so.1 $(BUILD)/libgbm.so
 
 $(DRM_OUT): $(DRM_SRC)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(DRM_CFLAGS) -shared -Wl,-soname,libdrm.so.2 $^ -o $@ $(LDFLAGS) -ldl -lnativewindow
-	ln -sf libdrm.so.2 $(BUILD)/libdrm.so
+	cp libdrm.so.2 $(BUILD)/libdrm.so
 
 $(DRI_OUT): $(DRI_SRC) $(DRI_DEPS)
 	@mkdir -p $(BUILD)
@@ -164,15 +164,15 @@ $(DRI_OUT): $(DRI_SRC) $(DRI_DEPS)
 $(GLES_OUT): $(GLES_SRC) $(GLES_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(GLES_CFLAGS) -shared -Wl,-soname,libGLESv2.so.2 $< -o $@ $(LDFLAGS) $(GLES_LIBS)
-	ln -sf libGLESv2.so.2 $(BUILD)/libGLESv2.so
-	ln -sf libGLESv2.so.2 $(BUILD)/libGLESv3.so
-	ln -sf libGLESv2.so.2 $(BUILD)/libGLESv1_CM.so.1
-	ln -sf libGLESv2.so.2 $(BUILD)/libGLESv1_CM.so
+	cp libGLESv2.so.2 $(BUILD)/libGLESv2.so
+	cp libGLESv2.so.2 $(BUILD)/libGLESv3.so
+	cp libGLESv2.so.2 $(BUILD)/libGLESv1_CM.so.1
+	cp libGLESv2.so.2 $(BUILD)/libGLESv1_CM.so
 
 $(EGL_OUT): $(EGL_SRC) $(EGL_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(EGL_CFLAGS) -shared -Wl,-soname,libEGL.so.1 $< -o $@ $(LDFLAGS) $(EGL_LIBS)
-	ln -sf libEGL.so.1 $(BUILD)/libEGL.so
+	cp libEGL.so.1 $(BUILD)/libEGL.so
 
 $(GL_BRIDGE_OBJ): $(GL_BRIDGE_SRC) $(GL_DIR)/Include/gl_desktop_texture.h
 	@mkdir -p $(@D)
@@ -181,9 +181,9 @@ $(GL_BRIDGE_OBJ): $(GL_BRIDGE_SRC) $(GL_DIR)/Include/gl_desktop_texture.h
 $(GL_OUT): $(GL_SRC) $(GL_DEPS) $(GL_BRIDGE_OBJ) | $(EGL_OUT)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(GL_CFLAGS) -shared -Wl,-soname,libGL.so.1 $< $(GL_BRIDGE_OBJ) -o $@ $(LDFLAGS) $(GL_LIBS)
-	ln -sf libGL.so.1 $(BUILD)/libGL.so
-	ln -sf libGL.so.1 $(BUILD)/libGLX.so
-	ln -sf libGL.so.1 $(BUILD)/libGLX.so.0
+	cp libGL.so.1 $(BUILD)/libGL.so
+	cp libGL.so.1 $(BUILD)/libGLX.so
+	cp libGL.so.1 $(BUILD)/libGLX.so.0
 
 clean:
 	rm -rf $(BUILD)

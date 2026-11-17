@@ -88,26 +88,6 @@ static void al_bfb(unsigned t, unsigned f)  { AL(void (*)(unsigned, unsigned), "
 static void al_bvao(unsigned v)             { AL(void (*)(unsigned), "glBindVertexArray")(v); }
 
 /* Textures */
-GLC void glTextureStorage1DEXT(unsigned tex, unsigned target, int lv, unsigned f, int w) {
-    target = t1d(target);
-    int sv = 0; glGetIntegerv(al_texq(target), &sv);
-    glBindTexture(target, tex);
-    AL(void (*)(unsigned, int, unsigned, int), "glTexStorage1D")(target, lv, f, w);
-    glBindTexture(target, (unsigned)sv);
-}
-GLC void glTextureStorage2DEXT(unsigned tex, unsigned target, int lv, unsigned f, int w, int h) {
-    target = t1d(target);
-    int sv = 0; glGetIntegerv(al_texq(target), &sv);
-    glBindTexture(target, tex);
-    AL(void (*)(unsigned, int, unsigned, int, int), "glTexStorage2D")(target, lv, f, w, h);
-    glBindTexture(target, (unsigned)sv);
-}
-GLC void glTextureStorage3DEXT(unsigned tex, unsigned target, int lv, unsigned f, int w, int h, int d) {
-    int sv = 0; glGetIntegerv(al_texq(target), &sv);
-    glBindTexture(target, tex);
-    AL(void (*)(unsigned, int, unsigned, int, int, int), "glTexStorage3D")(target, lv, f, w, h, d);
-    glBindTexture(target, (unsigned)sv);
-}
 GLC void glTextureStorage2DMultisampleEXT(unsigned tex, unsigned target, int s, unsigned f, int w, int h, unsigned char fx) {
     int sv = 0; glGetIntegerv(al_texq(target), &sv);
     glBindTexture(target, tex);

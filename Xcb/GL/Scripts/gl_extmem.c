@@ -2,10 +2,13 @@
  * gl_extmem.c - GL_EXT_memory_object + GL_EXT_semaphore for OpenGL Core Profile (via AHardwareBuffer / DMABUF / EGL sync).
  * Include in gl_es_emul.c right before: #include "gl_es_alias.c"
  *
- * Import:
+ * Import & Export:
  *     void glImportMemoryDmaBufEXT(GLuint mem, int fd, int pitch, GLuint64 mod);
  *     void glImportMemoryAHardwareBufferEXT(GLuint mem, void* ahb);
+ *     void glImportMemoryFdEXT(GLuint mem, GLuint64 size, GLenum handleType, int fd);
+ *     int  glExportMemoryFdEXT(GLuint mem);
  *     void glImportSemaphoreFdEXT(GLuint sem, GLenum handleType, int fd);  // handleType 0x9586, fd = sync_file
+ *     int  glExportSemaphoreFdEXT(GLuint sem);
  */
 #include <dlfcn.h>
 #include <unistd.h>
@@ -47,7 +50,16 @@ static void* xm_anwb(void* ahb) {
 
 /* ---------- Memory objects ---------- */
 #define XM_MAX 1024
-typedef struct { int used, dedicated, prot; int fd; int pitch; unsigned long long mod; void* ahb; void* img; } xm_t;
+typedef struct { 
+    int used, dedicated, prot; 
+    int fd; 
+    int pitch; 
+    unsigned long long size;
+    unsigned long long mod; 
+    void* ahb; 
+    void* img; 
+} xm_t;
+
 static xm_t xm[XM_MAX];
 static pthread_mutex_t xm_mu = PTHREAD_MUTEX_INITIALIZER;
 static xm_t* xm_get(unsigned n) { return (n && n < XM_MAX && xm[n].used) ? &xm[n] : NULL; }
@@ -104,6 +116,31 @@ GLC void glImportMemoryAHardwareBufferEXT(unsigned m, void* ahb) {
     o->ahb = ahb;
 }
 
+GLC void glImportMemoryFdEXT(unsigned m, unsigned long long size, unsigned handleType, int fd) {
+    xm_t* o = xm_get(m);
+    if (!o || handleType != 0x9586 || o->fd >= 0 || o->ahb || fd < 0) return;
+    o->fd = fd;                              /* ownership transferred, no dup (as per specification) */
+    o->size = size; o->pitch = 0;
+    o->mod = 0x00ffffffffffffffULL;          /* DRM_FORMAT_MOD_INVALID: do not send modifier */
+}
+
+typedef struct { int version, numFds, numInts; int data[]; } xm_nh;
+typedef const xm_nh* (*X_gnh)(const void*);
+
+GLC int glExportMemoryFdEXT(unsigned m) {          /* returns a dup'd dma-buf fd, or -1 */
+    xm_t* o = xm_get(m); if (!o) return -1;
+    if (o->fd >= 0) return dup(o->fd);
+    if (!o->ahb) return -1;
+    X_gnh g = (X_gnh)xm_nw("AHardwareBuffer_getNativeHandle");
+    const xm_nh* nh = g ? g(o->ahb) : NULL; if (!nh) return -1;
+    int best = -1; off_t bs = 0;
+    for (int i = 0; i < nh->numFds; i++) {
+        off_t sz = lseek(nh->data[i], 0, SEEK_END); lseek(nh->data[i], 0, SEEK_SET);
+        if (sz > bs) { bs = sz; best = nh->data[i]; }
+    }
+    return best >= 0 ? dup(best) : -1;
+}
+
 static unsigned xm_fourcc(unsigned f) {
     switch (f) {
     case 0x8058: case 0x8C43: return 0x34324241;  /* GL_RGBA8 / GL_SRGB8_ALPHA8 -> ABGR8888 */
@@ -129,76 +166,30 @@ static void xm_tex(unsigned target, unsigned ifmt, int w, int h, unsigned mem, u
     }
 
     if (!o || o->fd < 0 || !fc) { if (gl_emul_debug_enabled()) fprintf(stderr, "[gl-extmem] bad mem/format 0x%x\n", ifmt); return; }
-    const int at_dmabuf[] = {
-        0x3057, w, 0x3056, h, 0x3271, (int)fc,
-        0x3272, o->fd, 0x3273, (int)off, 0x3274, o->pitch,
-        0x3443, (int)(o->mod & 0xffffffffu), 0x3444, (int)(o->mod >> 32),
-        0x3038 };
+    
+    int pitch = o->pitch;
+    if (!pitch) {
+        long long sz = o->size ? (long long)o->size : (long long)lseek(o->fd, 0, SEEK_END);
+        if (sz > (long long)off && h > 0) pitch = (int)((sz - (long long)off) / h);
+    }
+    int at_dmabuf[24], k = 0;
+    at_dmabuf[k++] = 0x3057; at_dmabuf[k++] = w;
+    at_dmabuf[k++] = 0x3056; at_dmabuf[k++] = h;
+    at_dmabuf[k++] = 0x3271; at_dmabuf[k++] = (int)fc;
+    at_dmabuf[k++] = 0x3272; at_dmabuf[k++] = o->fd;
+    at_dmabuf[k++] = 0x3273; at_dmabuf[k++] = (int)off;
+    at_dmabuf[k++] = 0x3274; at_dmabuf[k++] = pitch;
+    if (o->mod != 0x00ffffffffffffffULL) {
+        at_dmabuf[k++] = 0x3443; at_dmabuf[k++] = (int)(o->mod & 0xffffffffu);
+        at_dmabuf[k++] = 0x3444; at_dmabuf[k++] = (int)(o->mod >> 32);
+    }
+    at_dmabuf[k] = 0x3038;
+
     void* dpy = eglGetCurrentDisplay();
     void* img = XF("eglCreateImageKHR", X_cimg)(dpy, NULL, 0x3270 /*LINUX_DMA_BUF_EXT*/, NULL, at_dmabuf);
     if (!img) { if (gl_emul_debug_enabled()) fprintf(stderr, "[gl-extmem] dma-buf eglCreateImage failed\n"); return; }
     XF("glEGLImageTargetTexture2DOES", X_tgt)(target, img);
     XF("eglDestroyImageKHR", X_dimg)(dpy, img);   /* GL texture keeps the reference */
-}
-
-/* ===== DSA texture storage (emulat prin bind/restore) ===== */
-#define DSA_MAXTEX 65536
-static unsigned dsa_tt[DSA_MAXTEX];                 /* nume textură -> target */
-static void dsa_note(unsigned tex, unsigned tgt) { if (tex && tex < DSA_MAXTEX && tgt) dsa_tt[tex] = tgt; }
-static unsigned dsa_target(unsigned tex, unsigned def) { return (tex < DSA_MAXTEX && dsa_tt[tex]) ? dsa_tt[tex] : def; }
-
-static unsigned dsa_bq(unsigned t) {                /* target -> enum de binding */
-    switch (t) {
-    case 0x806F: return 0x806A;  case 0x8C1A: return 0x8C1D;  case 0x8513: return 0x8514;
-    case 0x9009: return 0x900A;  case 0x9100: return 0x9104;  case 0x9102: return 0x9105;
-    default: return 0x8069;
-    }
-}
-typedef struct { unsigned tgt; int old; } dsa_b;
-static dsa_b dsa_in(unsigned tex, unsigned def) {
-    dsa_b b; b.tgt = dsa_target(tex, def); b.old = 0;
-    RP(glGetIntegerv, F_geti)(dsa_bq(b.tgt), &b.old);
-    RP(glBindTexture, M_bt)(b.tgt, tex);
-    return b;
-}
-static void dsa_out(dsa_b b) { RP(glBindTexture, M_bt)(b.tgt, (unsigned)b.old); }
-
-typedef void (*D_gen)(int, unsigned*);
-typedef void (*D_ts2)(unsigned, int, unsigned, int, int);
-typedef void (*D_ts3)(unsigned, int, unsigned, int, int, int);
-
-GLC void glCreateTextures(unsigned target, int n, unsigned* t) {
-    RP(glGenTextures, D_gen)(n, t);
-    int old = 0; RP(glGetIntegerv, F_geti)(dsa_bq(target), &old);
-    for (int i = 0; i < n; i++) { RP(glBindTexture, M_bt)(target, t[i]); dsa_note(t[i], target); }
-    RP(glBindTexture, M_bt)(target, (unsigned)old);
-}
-
-GLC void glTextureStorage1D(unsigned tex, int lv, unsigned f, int w) {
-    dsa_b b = dsa_in(tex, 0x0DE1); RP(glTexStorage2D, D_ts2)(0x0DE1, lv, f, w, 1); dsa_out(b);
-}
-GLC void glTextureStorage2D(unsigned tex, int lv, unsigned f, int w, int h) {
-    dsa_b b = dsa_in(tex, 0x0DE1); RP(glTexStorage2D, D_ts2)(b.tgt, lv, f, w, h); dsa_out(b);
-}
-GLC void glTextureStorage3D(unsigned tex, int lv, unsigned f, int w, int h, int d) {
-    dsa_b b = dsa_in(tex, 0x806F); RP(glTexStorage3D, D_ts3)(b.tgt, lv, f, w, h, d); dsa_out(b);
-}
-GLC void glTextureStorage2DMultisample(unsigned tex, int s, unsigned f, int w, int h, unsigned char fx) {
-    dsa_b b = dsa_in(tex, 0x9100); RP(glTexStorage2DMultisample, L_tsm2)(b.tgt, s, f, w, h, fx); dsa_out(b);
-}
-GLC void glTextureStorage3DMultisample(unsigned tex, int s, unsigned f, int w, int h, int d, unsigned char fx) {
-    dsa_b b = dsa_in(tex, 0x9102); RP(glTexStorage3DMultisampleOES, L_tsm3)(b.tgt, s, f, w, h, d, fx); dsa_out(b);
-}
-
-/* variantele EXT (EXT_direct_state_access / EXT_texture_storage): au parametru <target> */
-GLC void glTextureStorage1DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w) {
-    (void)tgt; dsa_note(tex, 0x0DE1); glTextureStorage1D(tex, lv, f, w);
-}
-GLC void glTextureStorage2DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w, int h) {
-    dsa_note(tex, tgt); glTextureStorage2D(tex, lv, f, w, h);
-}
-GLC void glTextureStorage3DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w, int h, int d) {
-    dsa_note(tex, tgt); glTextureStorage3D(tex, lv, f, w, h, d);
 }
 
 /* ---------- OpenGL Textures (Traditional & DSA) ---------- */
@@ -220,17 +211,20 @@ GLC void glTexStorageMem1DEXT(unsigned t, int lv, unsigned f, int w, unsigned m,
     (void)lv; xm_tex(t1d(t), f, w, 1, m, off);
 }
 
-GLC void glTextureStorageMem2DEXT(unsigned tex, int lv, unsigned f, int w, int h, unsigned m, unsigned long long off) {
-    (void)lv;
-    dsa_b b = dsa_in(tex, 0x0DE1);
-    xm_tex(b.tgt, f, w, h, m, off);
-    dsa_out(b);
-}
 GLC void glTextureStorageMem1DEXT(unsigned tex, int lv, unsigned f, int w, unsigned m, unsigned long long off) {
     (void)lv;
-    dsa_b b = dsa_in(tex, 0x0DE1);
+    int old = 0; RP(glGetIntegerv, F_geti)(0x8069 /*GL_TEXTURE_BINDING_2D*/, &old);
+    RP(glBindTexture, M_bt)(0x0DE1 /*GL_TEXTURE_2D*/, tex);
     xm_tex(0x0DE1, f, w, 1, m, off);
-    dsa_out(b);
+    RP(glBindTexture, M_bt)(0x0DE1, (unsigned)old);
+}
+
+GLC void glTextureStorageMem2DEXT(unsigned tex, int lv, unsigned f, int w, int h, unsigned m, unsigned long long off) {
+    (void)lv;
+    int old = 0; RP(glGetIntegerv, F_geti)(0x8069 /*GL_TEXTURE_BINDING_2D*/, &old);
+    RP(glBindTexture, M_bt)(0x0DE1 /*GL_TEXTURE_2D*/, tex);
+    xm_tex(0x0DE1, f, w, h, m, off);
+    RP(glBindTexture, M_bt)(0x0DE1, (unsigned)old);
 }
 
 /* ---------- OpenGL Buffers (Traditional & DSA) ---------- */
@@ -287,6 +281,23 @@ GLC void glImportSemaphoreFdEXT(unsigned sem, unsigned handleType, int fd) {
     s->fd = fd;
 }
 
+GLC int glExportSemaphoreFdEXT(unsigned sem) {      /* sync_file for commands issued up to this point */
+    if (!xs_get(sem)) return -1;
+    void* dpy = eglGetCurrentDisplay();
+    X_csync cs = XF("eglCreateSyncKHR", X_csync);
+    typedef int (*X_dupfd)(void*, void*);
+    X_dupfd df = XF("eglDupNativeFenceFDANDROID", X_dupfd);
+    X_dsync ds = XF("eglDestroySyncKHR", X_dsync);
+    if (!cs || !df || !ds) return -1;
+    const int at[] = { 0x3145 /*NATIVE_FENCE_FD_ANDROID*/, -1, 0x3038 };
+    void* sy = cs(dpy, 0x3144, at);
+    if (!sy) return -1;
+    RP(glFlush, X_flush)();
+    int fd = df(dpy, sy);                          /* -1 = already signaled */
+    ds(dpy, sy);
+    return fd;
+}
+
 GLC void glSignalSemaphoreEXT(unsigned sem, unsigned nb, const unsigned* bufs,
                               unsigned nt, const unsigned* texs, const unsigned* dstLayouts) {
     (void)nb; (void)bufs; (void)nt; (void)texs; (void)dstLayouts;
@@ -315,19 +326,17 @@ GLC void glWaitSemaphoreEXT(unsigned sem, unsigned nb, const unsigned* bufs,
     X_wsync ws = XF("eglWaitSyncKHR", X_wsync);
     X_dsync ds = XF("eglDestroySyncKHR", X_dsync);
     if (!ws || !ds) return;
-    
     void* sy = s->sync; s->sync = NULL;
-    const char* how = sy ? "stored fence (from Signal)" : "no sync (implicit only)";
     if (!sy && s->fd >= 0 && cs) {
         const int at[] = { 0x3145 /*NATIVE_FENCE_FD_ANDROID*/, s->fd, 0x3038 };
         sy = cs(dpy, 0x3144 /*EGL_SYNC_NATIVE_FENCE_ANDROID*/, at);
-        if (sy) { s->fd = -1; how = "imported sync_file"; }
-        else how = "sync_file import FAILED";
+        if (sy) s->fd = -1;
     }
-    if (gl_emul_debug_enabled()) fprintf(stderr, "[extmem] wait: %s\n", how);
+    if (gl_emul_debug_enabled())
+        fprintf(stderr, "[extmem] wait: %s\n",
+                sy ? (s->fd < 0 && !s->sync ? "stored/native fence" : "stored fence") : "no sync (implicit dma-buf only)");
     if (sy) { ws(dpy, sy, 0); ds(dpy, sy); }
 }
-
 
 /* ---------- Device / driver UUID ---------- */
 typedef unsigned (*X_qda)(void*, int, intptr_t*);
@@ -373,15 +382,23 @@ GLC void glGetInternalformativ(unsigned target, unsigned ifmt, unsigned pname, i
     RP(glGetInternalformativ, X_giv)(target, ifmt, pname, n, p);
 }
 
-GLC void glTextureStorageMem2DMultisampleEXT(unsigned t, int s, unsigned f, int w, int h, unsigned char fx, unsigned m, unsigned long long off) {
+GLC void glTexStorageMem3DMultisampleEXT(unsigned t, int s, unsigned f, int w, int h, int d,
+                                         unsigned char fx, unsigned m, unsigned long long off) {
+    (void)t; (void)s; (void)f; (void)w; (void)h; (void)d; (void)fx; (void)m; (void)off;
+    if (gl_emul_debug_enabled()) fprintf(stderr, "[extmem] 3D MS memory textures unsupported\n");
+}
+GLC void glTextureStorageMem2DMultisampleEXT(unsigned t, int s, unsigned f, int w, int h,
+                                             unsigned char fx, unsigned m, unsigned long long off) {
     (void)t; (void)s; (void)f; (void)w; (void)h; (void)fx; (void)m; (void)off;
     if (gl_emul_debug_enabled()) fprintf(stderr, "[extmem] MS memory textures unsupported\n");
 }
-GLC void glTextureStorageMem3DEXT(unsigned t, int lv, unsigned f, int w, int h, int d, unsigned m, unsigned long long off) {
+GLC void glTextureStorageMem3DEXT(unsigned t, int lv, unsigned f, int w, int h, int d,
+                                  unsigned m, unsigned long long off) {
     (void)t; (void)lv; (void)f; (void)w; (void)h; (void)d; (void)m; (void)off;
     if (gl_emul_debug_enabled()) fprintf(stderr, "[extmem] 3D memory textures unsupported\n");
 }
-GLC void glTextureStorageMem3DMultisampleEXT(unsigned t, int s, unsigned f, int w, int h, int d, unsigned char fx, unsigned m, unsigned long long off) {
+GLC void glTextureStorageMem3DMultisampleEXT(unsigned t, int s, unsigned f, int w, int h, int d,
+                                             unsigned char fx, unsigned m, unsigned long long off) {
     (void)t; (void)s; (void)f; (void)w; (void)h; (void)d; (void)fx; (void)m; (void)off;
     if (gl_emul_debug_enabled()) fprintf(stderr, "[extmem] 3D MS memory textures unsupported\n");
 }

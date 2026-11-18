@@ -738,6 +738,7 @@ without an EGL X11 platform in the driver.
 | `WSI_NO_UPGRADE=1` | Do not upgrade ES2 contexts to ES3 |
 | `WSI_FPS`, `WSI_VSYNC`, `WSI_STATS` | Fallback WSI: frame cap, vsync gating, diagnostics |
 | `SHIM_DRM_PRIMARY`, `SHIM_DRM_RENDER`, `SHIM_LIBDRM` | DRM node names for the device extensions |
+| `SHIM_STALL_MS=<ms>` | Force VSYNC pacing once a swap or fence wait takes this long (default 250, `0` disables) |
 
 ### How it works
 
@@ -759,9 +760,19 @@ without an EGL X11 platform in the driver.
   rendered into the GBM buffer pool directly.
 - **Extensions:** adds or emulates `EGL_KHR_debug`, `EGL_EXT_sync_reuse`,
   `EGL_MESA_drm_image`, `EGL_MESA_image_dma_buf_export`,
-  `EGL_EXT_device_*` and `EGL_KHR_swap_buffers_with_damage`.
+  `EGL_EXT_device_*`, `EGL_KHR_swap_buffers_with_damage` and
+  `EGL_EXT_swap_tearing_hint`.
 - **GLES shim:** `libGLESv2` detects `shim_x11_default_fbo` here and
   switches its own WSI off.
+- **Swap pacing:** `eglSwapInterval` and `EGL_SWAP_TEARING_HINT_EXT`
+  (set with `eglSurfaceAttrib` on the current surface) are handled
+  separately. With interval 0, `DEFAULT` and `ASYNC` present with the
+  Present `ASYNC` option; `VSYNC` presents without it and drops frames
+  when no buffer is free (mailbox) instead of blocking. With interval
+  >= 1 the hint is ignored. If a swap or fence wait takes longer than
+  `SHIM_STALL_MS`, the surface switches to `VSYNC` behaviour until it
+  is recreated. The hint is write-only: querying it returns
+  `EGL_BAD_ATTRIBUTE`.
 
 ### Limitations
 
@@ -769,7 +780,11 @@ without an EGL X11 platform in the driver.
 - One X connection and display per process.
 - Zero-copy requires GLES 3; GLES 1/2 contexts use the fallback WSI.
 - Up to 64 contexts and 4 initialized displays.
-  
+- Swap tearing hint: stored but unused on GBM surfaces; the fallback WSI
+  only toggles `ASYNC` (no mailbox).
+- Stall fallback to `VSYNC` is per surface and is not reverted
+  automatically.
+
 ## DRM
 
 Path: `Xcb/drm`

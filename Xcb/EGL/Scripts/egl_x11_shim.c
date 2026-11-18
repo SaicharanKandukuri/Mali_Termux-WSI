@@ -9,11 +9,6 @@
  *   (linear dma-buf) -> DRI3 pixmap_from_buffer -> Present (IDLE_NOTIFY, N buffers)
  * Automatic fallback to legacy WSI if anything fails.
  *
- * Build:
- *   clang --target=aarch64-linux-android31 -shared -fPIC -O2 -Wall -fvisibility=hidden \
- *         -o libEGL.so.1 egl_x11_shim.c -ldl -lxcb -lxcb-dri3 -lxcb-present \
- *         -Wl,-soname,libEGL.so.1
- *   ln -sf libEGL.so.1 libEGL.so
  */
 #define _GNU_SOURCE
 #include "wsi_egl_x11.h"
@@ -75,6 +70,10 @@
 #define EGL_DRIVER_UUID_EXT           0x335D
 #define EGL_DRIVER_NAME_EXT           0x335E
 #define EGL_TRACK_REFERENCES_KHR      0x3352
+#define EGL_SWAP_TEARING_HINT_EXT          0x35A0
+#define EGL_SWAP_TEARING_HINT_VSYNC_EXT    0x35A1
+#define EGL_SWAP_TEARING_HINT_ASYNC_EXT    0x35A2
+#define EGL_SWAP_TEARING_HINT_DEFAULT_EXT  0x35A3
 
 #define MAX_BUFFERS 8
 #define GBM_MAX_SLOTS 6
@@ -257,10 +256,11 @@ typedef struct shim_surf {
     wsi_x11* wsi;
     void* ctx;
     int interval;
-    void* dpy;      /* display-ul căruia îi aparține suprafața */
-    struct shim_surf* rel_next;   /* lista temporară din eglDestroyContext */
+    void* dpy;      /* Display that owns this surface */
+    struct shim_surf* rel_next;   /* Temporary list in eglDestroyContext */
+    int stall_vsync;   /* Set when a swap/fence exceeds the limit */
     /* dmabuf path */
-    int releasing;   /* revendicat de un singur teardown */
+    int releasing;   /* Claimed by a single teardown */
     int dmabuf_inited, dmabuf_failed, no_idle, swz, fmt;
     dmabuf_slot_t slots[MAX_BUFFERS];
     int current_slot;
@@ -269,7 +269,8 @@ typedef struct shim_surf {
     void *app_ab, *app_img;
     xcb_special_event_t* se;
     uint32_t eid;
-
+    int tear_hint;   /* 0 = DEFAULT */
+    
     /* Present worker */
     pthread_t th;
     int th_started, stop, qhead, qcount, inflight;
@@ -368,7 +369,7 @@ static void dbg_msg(unsigned err, const char* cmd, int mtype,
     pthread_mutex_lock(&D.mu);
     cb = D.cb; en = D.on[mtype - EGL_DEBUG_MSG_CRITICAL_KHR];
     pthread_mutex_unlock(&D.mu);
-    if (!cb || !en) return;          /* callback apelat fara lock (nu e reentrant) */
+    if (!cb || !en) return;          /* Callback called without lock (not reentrant) */
     cb(err, cmd, mtype, T_label, otype ? lbl_get(otype, obj) : NULL, msg);
 }
 
@@ -395,7 +396,7 @@ EXPORT int eglDebugMessageControlKHR(dbg_cb_t cb, const intptr_t* at) {
     pthread_mutex_lock(&D.mu);
     D.cb = cb;
     if (cb) memcpy(D.on, nv, sizeof nv);
-    else { D.on[0] = D.on[1] = 1; D.on[2] = D.on[3] = 0; }   /* reset la default */
+    else { D.on[0] = D.on[1] = 1; D.on[2] = D.on[3] = 0; }   /* Reset to default */
     pthread_mutex_unlock(&D.mu);
     return E_SUCCESS;
 }
@@ -462,7 +463,7 @@ static void mali_err(const char* cmd) {
     if (!ge) *(void**)&ge = rsym("eglGetError");
     int e = ge ? ge() : E_SUCCESS;
     if (e == E_SUCCESS) return;
-    T_err = e;                          /* aplicația îl vede în continuare */
+    T_err = e;                          /* The application still sees it */
     int crit = (e == E_BAD_ALLOC || e == 0x300E);
     dbg_msg(e, cmd, crit ? EGL_DEBUG_MSG_CRITICAL_KHR : EGL_DEBUG_MSG_ERROR_KHR,
             0, NULL, "EGL error from driver");
@@ -738,10 +739,56 @@ static int first_free(shim_surf* s) {
     return -1;
 }
 
+static inline int surf_eff_hint(shim_surf* s) {
+    if (__atomic_load_n(&s->stall_vsync, __ATOMIC_RELAXED))
+        return EGL_SWAP_TEARING_HINT_VSYNC_EXT;
+    return __atomic_load_n(&s->tear_hint, __ATOMIC_RELAXED);
+}
+
+static inline int surf_use_async(shim_surf* s) {
+    return s->interval <= 0 &&
+           surf_eff_hint(s) != EGL_SWAP_TEARING_HINT_VSYNC_EXT;
+}
+
+static inline int surf_use_mailbox(shim_surf* s) {
+    return s->mailbox ||
+           (s->interval <= 0 && surf_eff_hint(s) == EGL_SWAP_TEARING_HINT_VSYNC_EXT);
+}
+
+static void surf_pacing_update(shim_surf* s) {
+    DBG("[shim] pacing: interval=%d hint=0x%x -> async=%d mailbox=%d\n",
+        s->interval, (unsigned)__atomic_load_n(&s->tear_hint, __ATOMIC_RELAXED),
+        surf_use_async(s), surf_use_mailbox(s));
+    if (!s->wsi) return;
+    if (surf_use_async(s)) s->wsi->flags |= WSI_X11_ASYNC;
+    else s->wsi->flags &= ~WSI_X11_ASYNC;
+}      
+
+      static long stall_limit_us(void) {
+    static long v = -1;
+    if (v < 0) {
+        const char* e = getenv("SHIM_STALL_MS");
+        v = (e ? atol(e) : 250) * 1000L;      /* 0 = disabled */
+    }
+    return v;
+}
+
+static void stall_check(shim_surf* s, long us, const char* what) {
+    long lim = stall_limit_us();
+    if (lim <= 0 || us < lim) return;
+    /* First frames are slow (allocations, shaders): do not count */
+    if (__atomic_load_n(&s->frames, __ATOMIC_RELAXED) < 5) return;
+    if (__atomic_exchange_n(&s->stall_vsync, 1, __ATOMIC_RELAXED)) return;
+    DBG("[shim] stall: %s took %ld ms (limit %ld ms), forcing VSYNC\n",
+        what, us / 1000, lim / 1000);
+    surf_pacing_update(s);
+}
+      
 static void present_slot(shim_surf* s, int slot) {
     static int copy = -1;
     if (copy < 0) { const char* v = getenv("SHIM_PRESENT_COPY"); copy = v && atoi(v); }
-    uint32_t opts = (s->interval <= 0 ? XCB_PRESENT_OPTION_ASYNC : 0) | (copy ? XCB_PRESENT_OPTION_COPY : 0);
+    uint32_t opts = (surf_use_async(s) ? XCB_PRESENT_OPTION_ASYNC : 0) |
+                (copy ? XCB_PRESENT_OPTION_COPY : 0);
     
     if (shim_debug_enabled() && s->present_serial < 3) {
         xcb_void_cookie_t ck = xcb_present_pixmap_checked(G.xc, s->win, s->slots[slot].pixmap,
@@ -782,6 +829,7 @@ static void* present_worker(void* arg) {
                 if (sync && destroy_sync) destroy_sync(G.dpy, sync);
             }
             long tf = now_us() - tf0;
+            stall_check(s, tf, "fence wait");
             s->t_pres[slot] = now_us();
             present_slot(s, slot);
 
@@ -1190,7 +1238,7 @@ static int app_tex_afbc(shim_surf* s, void* (*get_cb)(void*),
         if (fd >= 0) { sz = lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET); }
         long long lin = (long long)d.stride * 4 * s->h;
         fprintf(stderr, "[shim] app texture: AHB stride %u px, fd size %lld, linear %lld => %s\n",
-                d.stride, sz, lin, sz > lin ? "AFBC (headere + body)" : "pare LINEAR");
+                d.stride, sz, lin, sz > lin ? "AFBC (headers + body)" : "appears LINEAR");
     }
     return 1;
 }
@@ -1357,7 +1405,7 @@ static void dmabuf_swap(shim_surf* s) {
             }
         }
         if ((mode == 0 || mode == 3) && (!create_sync || !rsym("eglClientWaitSyncKHR"))) mode = 1;
-        DBG("[shim] sync: %s | buffers: %d | mailbox: %s\n",
+        DBG("[shim] sync: %s | buffers: %d | mailbox(env): %s\n",
             mode == 0 ? "EGL fence (full)" : mode == 1 ? "glFinish" : mode == 2 ? "glFlush"
             : mode == 3 ? "ARM implicit_external_sync fence" : "native fence fd (poll)",
             s->nbuf, (s->mailbox) ? "yes" : "no");
@@ -1378,7 +1426,7 @@ static void dmabuf_swap(shim_surf* s) {
 
     long ta0 = now_us();
     int k;
-    if (s->mailbox) {
+    if (surf_use_mailbox(s)) {
         pthread_mutex_lock(&s->mu);
         k = first_free(s);
         pthread_mutex_unlock(&s->mu);
@@ -1391,6 +1439,7 @@ static void dmabuf_swap(shim_surf* s) {
     } else k = acquire_slot(s);
     long ta1 = now_us();
     dmabuf_slot_t* sl = &s->slots[k];
+
 
     gl_saved st;
     gl_save(&st);
@@ -1421,18 +1470,37 @@ static void dmabuf_swap(shim_surf* s) {
     } else if (mode == 1) GL.finish();
     else GL.flush();
 
+    int dropped = 0;
     pthread_mutex_lock(&s->mu);
-    sl->busy = 1;
-    s->q[(s->qhead + s->qcount) % MAX_BUFFERS].slot = k;
-    s->q[(s->qhead + s->qcount) % MAX_BUFFERS].sync = sync;
-    s->q[(s->qhead + s->qcount) % MAX_BUFFERS].fd = ffd;
-    s->qcount++;
-    pthread_cond_signal(&s->cv_job);
+    if (s->qcount >= MAX_BUFFERS) {
+        dropped = 1;
+        s->st_drop++;
+    } else {
+        sl->busy = 1;
+        int t = (s->qhead + s->qcount) % MAX_BUFFERS;
+        s->q[t].slot = k;
+        s->q[t].sync = sync;
+        s->q[t].fd = ffd;
+        s->qcount++;
+        pthread_cond_signal(&s->cv_job);
+    }
     pthread_mutex_unlock(&s->mu);
+
+    if (dropped) {
+        DBG("[shim] present queue full, frame dropped\n");
+        if (ffd >= 0) {
+            mali_fence_t f = { .fd = ffd, .sync = sync };
+            mali_fence_release(&G.fctx, G.dpy, &f);
+        } else if (sync) {
+            unsigned (*ds)(void*, void*) = rsym("eglDestroySyncKHR");
+            if (ds) ds(G.dpy, sync);
+        }
+        return;
+    }
 
     s->current_slot = (k + 1) % s->nbuf;
     s->frames++;
-
+    stall_check(s, now_us() - ta0, "swap");
     if (stats) {
         long now = now_us();
         s->st_frames++;
@@ -1463,7 +1531,7 @@ static int gbm_load(void) {
         *(void**)&GB.size = dlsym(h, "gbm_surface_ahb_size");
     }
     GB.state = (GB.anwb && GB.deq && GB.enq && GB.size) ? 1 : -1;
-    if (GB.state < 0) DBG("[shim] gbm: libgbm.so.1 (AHB) lipseste sau e incompleta\n");
+    if (GB.state < 0) DBG("[shim] gbm: libgbm.so.1 (AHB) missing or incomplete\n");
     return GB.state > 0 ? 0 : -1;
 }
 
@@ -1509,7 +1577,7 @@ static int gbm_slot(shim_surf* s, void* bo) {
 
     static const int attr[] = { 0x30D2, 1, 0x3038 };
     void* img = create_img(G.gdpy, NULL, 0x3140, anwb, attr);
-    if (!img) { DBG("[shim] gbm: eglCreateImageKHR esuat\n"); return -1; }
+    if (!img) { DBG("[shim] gbm: eglCreateImageKHR failed\n"); return -1; }
 
     gl_saved st; gl_save(&st);
     int k = s->ngsl;
@@ -1525,7 +1593,7 @@ static int gbm_slot(shim_surf* s, void* bo) {
     unsigned fs = GL.checkFramebufferStatus(C_FRAMEBUFFER);
     gl_restore(&st);
     if (fs != C_FB_COMPLETE) {
-        DBG("[shim] gbm: FBO incomplet (0x%x)\n", fs);
+        DBG("[shim] gbm: FBO incomplete (0x%x)\n", fs);
         unsigned (*di)(void*, void*) = rsym("eglDestroyImageKHR");
         GL.deleteFramebuffers(1, &fbo); GL.deleteTextures(1, &tex);
         if (di) di(G.gdpy, img);
@@ -1577,7 +1645,7 @@ static int gbm_attach(shim_surf* s, void* ctx) {
     GL.bindFramebuffer(C_FRAMEBUFFER, s->gsl[k].fbo);
     GL.viewport(0, 0, s->w, s->h);
     GL.scissor(0, 0, s->w, s->h);
-    DBG("[shim] GBM surface activ (%dx%d)\n", s->w, s->h);
+    DBG("[shim] GBM surface active (%dx%d)\n", s->w, s->h);
     return 0;
 }
 
@@ -1589,7 +1657,7 @@ static void gbm_swap(shim_surf* s) {
     GB.enq(s->gs, s->cur_bo);
     void* bo = NULL;
     for (int i = 0; i < 1000 && !(bo = GB.deq(s->gs)); i++) usleep(1000);
-    if (!bo) { DBG("[shim] gbm: niciun bo liber\n"); return; }
+    if (!bo) { DBG("[shim] gbm: no free bo\n"); return; }
     int k = gbm_slot(s, bo);
     if (k < 0) return;
     s->cur_bo = bo; s->gcur = k;
@@ -1658,6 +1726,7 @@ static int surf_attach(shim_surf* s, void* ctx) {
     if (!s->dmabuf_failed) {
         if (dmabuf_init(s, ver) == 0) {
             s->ctx = ctx;
+            surf_pacing_update(s);
             send_configure(s);
             return 0;
         }
@@ -2003,7 +2072,7 @@ EXPORT void* eglCreateImageKHR(void* d, void* c, unsigned t, void* b, const int*
         drm_img* r = drm_img_find_name((int)(intptr_t)b);
         void* anwb = (r && ahb_to_anwb) ? ahb_to_anwb(r->ab) : NULL;
         if (!anwb || !ahb_acquire) { SET_ERR(E_BAD_PARAMETER); return NULL; }
-        ahb_acquire(r->ab);                    /* referința imaginii importate */
+        ahb_acquire(r->ab);                    /* Reference for the imported image */
         imp_ab = r->ab;
         static const int pres[] = { 0x30D2, 1, 0x3038 };
         t = 0x3140; b = anwb; c = NULL; a = pres;
@@ -2110,7 +2179,7 @@ EXPORT unsigned eglExportDRMImageMESA(void* d, void* image, int* name, int* hand
 /* ---------- Sync wrapper (EGL_EXT_sync_reuse) ---------- */
 typedef struct shim_sync {
     struct shim_sync* next;
-    void* real;        /* sync-ul driverului; NULL = creat/ramas signaled */
+    void* real;        /* Driver sync object; NULL = created/left signaled */
     unsigned type;
     int reusable, signaled;
 } shim_sync; 
@@ -2158,7 +2227,8 @@ EXPORT void* eglCreateSyncKHR(void* d, unsigned t, const int* at) {
         if (!s->real) { free(s); return NULL; }
     }
     pthread_mutex_lock(&G.mu);
-    s->next = g_syncs; g_syncs = s;
+    s->next = g_syncs;
+    g_syncs = s;
     pthread_mutex_unlock(&G.mu);
     return s;
 }
@@ -2329,7 +2399,7 @@ EXPORT const char* eglQueryString(void* d, int name) {
         "EGL_NV_post_sub_buffer", "EGL_KHR_reusable_sync",
         "EGL_KHR_create_context_no_error", "EGL_KHR_context_flush_control",
         "EGL_KHR_image_pixmap", "EGL_ANDROID_get_native_client_buffer",
-        "EGL_ANDROID_native_fence_sync", "EGL_EXT_sync_reuse", "EGL_MESA_query_driver", "EGL_MESA_image_dma_buf_export", "EGL_MESA_drm_image",
+        "EGL_ANDROID_native_fence_sync", "EGL_EXT_sync_reuse", "EGL_MESA_query_driver", "EGL_MESA_image_dma_buf_export", "EGL_MESA_drm_image", "EGL_EXT_swap_tearing_hint",
     };
     static struct { const char* src; char* out; } cache[16];
     static int ncache;
@@ -2470,7 +2540,7 @@ EXPORT unsigned eglDestroySurface(void* d, void* surf) {
         return f ? f(d, surf) : 0;
     }
 
-    /* așteaptă ca eglDestroyContext să termine teardown-ul pe această suprafață */
+    /* Wait for eglDestroyContext to finish teardown on this surface */
     while (__atomic_load_n(&s->releasing, __ATOMIC_ACQUIRE)) usleep(100);
 
     void* (*cur)(void) = (void* (*)(void))rsym("eglGetCurrentContext");
@@ -2504,12 +2574,26 @@ EXPORT unsigned eglQuerySurface(void* d, void* surf, int attr, int* v) {
 }
 
 EXPORT unsigned eglSurfaceAttrib(void* d, void* surf, int attr, int v) {
-    if (find_surf(surf)) return 1;
+    shim_surf* s = find_surf(surf);
+    if (attr == EGL_SWAP_TEARING_HINT_EXT) {
+        if (v != EGL_SWAP_TEARING_HINT_VSYNC_EXT &&
+            v != EGL_SWAP_TEARING_HINT_ASYNC_EXT &&
+            v != EGL_SWAP_TEARING_HINT_DEFAULT_EXT) {
+            SET_ERR(E_BAD_ATTRIBUTE); return 0;
+        }
+        if (!s) return 1;                 /* pbuffer etc.: ignored (issue 5) */
+        if (T_surf != s) { SET_ERR(E_BAD_SURFACE); return 0; }
+        __atomic_store_n(&s->tear_hint,
+            v == EGL_SWAP_TEARING_HINT_DEFAULT_EXT ? 0 : v, __ATOMIC_RELAXED);
+        surf_pacing_update(s);
+        return 1;
+    }
+    if (s) return 1;
     if (shim_init()) return 0;
     static unsigned (*f)(void*, void*, int, int);
     if (!f) *(void**)&f = rsym("eglSurfaceAttrib");
     return f ? f(d, surf, attr, v) : 0;
-}
+  }
 
 static void* emu_sym(const char* n) {
     static void* h;
@@ -2533,7 +2617,7 @@ static void set_emu_ctx(void* ctx) {
 static int ctx_err(void) {
     int (*ge)(void) = rsym("eglGetError");
     int e = ge ? ge() : E_SUCCESS;
-    T_ctx_e = e;               /* NU mai scrie în T_err aici */
+    T_ctx_e = e;               /* Does NOT write to T_err here anymore */
     return e;
 }
   
@@ -2543,14 +2627,14 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
     if (!f) *(void**)&f = rsym("eglCreateContext");
     if (!f) return NULL;
     T_ctx_e = 0;
-    /* Filtrare generică a tuturor atributelor ANGLE (0x3480 - 0x34FF) nesuportate de Mali */
+    /* Generic filtering of all ANGLE attributes (0x3480 - 0x34FF) unsupported by Mali */
     int fil[64], fk = 0;
     for (const int* a = at; a && a[0] != E_NONE && fk < 60; a += 2) {
         if (a[0] >= 0x3480 && a[0] <= 0x34FF) {
             DBG("[shim] ctx attr 0x%x = 0x%x ignored (ANGLE)\n", a[0], a[1]);
             continue;
         }
-        if (a[0] == 0x31B3) {              /* NO_ERROR_KHR: doar TRUE(1) / FALSE(0) */
+        if (a[0] == 0x31B3) {              /* NO_ERROR_KHR: TRUE(1) / FALSE(0) only */
             if (a[1] != 0 && a[1] != 1) { 
                 SET_ERR(E_BAD_ATTRIBUTE); 
                 return NULL; 
@@ -2571,7 +2655,7 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
     fil[fk] = E_NONE;
     at = fil;
 
-    /* Logare atribute de intrare curățate */
+    /* Log cleaned input attributes */
     DBG("[shim] ctx request: g_gl_mapped=%d share=%p\n", g_gl_mapped, share);
     for (const int* a = at; a && a[0] != E_NONE; a += 2)
         DBG("[shim]   ctx attr 0x%x = 0x%x\n", a[0], a[1]);
@@ -2666,7 +2750,7 @@ EXPORT void* eglCreateContext(void* d, void* cfg, void* share, const int* at) {
         }
     }
 
-    /* Propagare eroare doar dacă crearea contextului a eșuat definitiv pe toate căile */
+    /* Propagate error only if context creation failed completely across all paths */
     if (!c && T_ctx_e != E_SUCCESS) {
         T_err = T_ctx_e;
         dbg_msg(T_ctx_e, "eglCreateContext", EGL_DEBUG_MSG_ERROR_KHR, 0, NULL,
@@ -2708,7 +2792,7 @@ EXPORT unsigned eglDestroyContext(void* d, void* ctx) {
     pthread_mutex_lock(&G.mu);
     for (shim_surf* s = G.surfs; s; s = s->next) {
         if (s->ctx != ctx) continue;
-        /* Sari peste suprafețele deja revendicate atomic de eglDestroySurface */
+        /* Skip surfaces already atomically claimed by eglDestroySurface */
         if (__atomic_exchange_n(&s->releasing, 1, __ATOMIC_ACQ_REL)) continue;
         s->ctx = NULL;
         s->rel_next = hit; 
@@ -2725,7 +2809,7 @@ EXPORT unsigned eglDestroyContext(void* d, void* ctx) {
         }
     pthread_mutex_unlock(&G.mu);
 
-    /* Teardown lock-free cu citire anticipată a succesorului (nx) */
+    /* Lock-free teardown with pre-fetched successor (nx) */
     for (shim_surf* s = hit, *nx; s; s = nx) {
         nx = s->rel_next;
         if (s->is_gbm) gbm_teardown(s, 0);
@@ -2782,10 +2866,7 @@ EXPORT unsigned eglSwapInterval(void* d, int interval) {
     shim_surf* s = cur_surf();
     if (s) {
         s->interval = interval;
-        if (s->wsi) {
-            if (interval <= 0) s->wsi->flags |= WSI_X11_ASYNC;
-            else s->wsi->flags &= ~WSI_X11_ASYNC;
-        }
+        surf_pacing_update(s);
     }
     return 1;
 }
@@ -3182,7 +3263,7 @@ EXPORT char* eglGetDisplayDriverConfig(void* d) {
 #define MAX_DPY 4
 static struct { void* d; int refs; } g_dref[MAX_DPY];
 
-static int dref_total(void) {          /* apelat cu G.mu ținut */
+static int dref_total(void) {          /* Called with G.mu held */
     int t = 0;
     for (int i = 0; i < MAX_DPY; i++) t += g_dref[i].refs;
     return t;
@@ -3325,7 +3406,7 @@ EXPORT unsigned eglExportDMABUFImageMESA(void* d, void* image, int* fds,
 
 EXPORT unsigned eglPostSubBufferNV(void* d, void* surf, int x, int y, int w, int h) {
     shim_surf* s = find_surf(surf);
-    if (!s) {                       /* pbuffer / suprafață Mali */
+    if (!s) {                       /* pbuffer / Mali surface */
         if (shim_init()) return 0;
         static unsigned (*f)(void*, void*, int, int, int, int);
         if (!f) *(void**)&f = rsym("eglPostSubBufferNV");
@@ -3334,7 +3415,7 @@ EXPORT unsigned eglPostSubBufferNV(void* d, void* surf, int x, int y, int w, int
     }
     if (x < 0 || y < 0 || w < 0 || h < 0) { SET_ERR(E_BAD_PARAMETER); return 0; }
     if (T_surf != s) { SET_ERR(E_BAD_CURRENT_SURF); return 0; }
-    if (w == 0 || h == 0 || x >= s->w || y >= s->h) return 1;  /* nimic de afișat */
+    if (w == 0 || h == 0 || x >= s->w || y >= s->h) return 1;  /* Nothing to display */
     return eglSwapBuffers(d, surf);
 }
 

@@ -4,29 +4,33 @@ Window System Integration (XCB) for Mali GPUs on Termux (Termux:X11).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
-### More info
+## Overview
 
-A zero-copy Window System Integration (WSI) layer that allows Desktop Linux applications (X11, KDE, Minecraft, Firefox) to run natively on Android's proprietary ARM Mali GPU, **without root** and **without Mesa/Zink**.
+A zero-copy Window System Integration (WSI) layer that lets desktop Linux
+applications (X11, KDE, Minecraft, Firefox) run on Android’s proprietary
+ARM Mali GPU, **without root** and **without Mesa/Zink**.
 
-### Local Device
+### Local device
 
-* **Hardware:** Xiaomi 24040RN64Y (MediaTek, Mali-G52 MC2)
-* **OS:** Android 14 (Stock, no root, bootloader locked)
-* **Environment:** Termux (Bionic linker, no proot)
-* **GPU:** Mali-G52 MC2
-* **CPU:** MediaTek Helio G91 Ultra (MT6769G)
+| | |
+|--|--|
+| **Hardware** | Xiaomi 24040RN64Y (MediaTek) |
+| **GPU** | Mali-G52 MC2 |
+| **CPU** | MediaTek Helio G91 Ultra (MT6769G) |
+| **OS** | Android 14 (stock, no root, locked bootloader) |
+| **Environment** | Termux (Bionic linker, no proot) |
 
-### GPU Tested
+### Also tested on
 
-* **GPU:** Mali-G78, Mali-G72, Mali-G77
+| GPU | Testers (Discord) |
+|-----|-------------------|
+| Mali-G72, Mali-G78 | @saicharankandukuri (Zman) |
+| Mali-G72 | @nonameforidea |
+| Mali-G77 MC9 | @bullymaguire0024 (BullyMaguire) |
 
-### Testes who helped
-
-Mostly those people was on Discord
-
-* **Users and GPU:** (@saicharankandukuri) Zman tested with: **Mali-G72 Mali-G78**; @nonameforidea tested with: **Mali-G72**; (@bullymaguire0024) BullyMaguire tested with: **Mali-G77 MC9**
+## Contents
 
 ## Contents
 

@@ -42,8 +42,6 @@ in the original baseline run. Adding only the unversioned
 readback; removing it restored the pass. Use `build` for linking and
 `build/gl-runtime` for running the test. No root is required.
 
-### Visual workloads
-
-- [Mesa glxgears](https://archive.mesa3d.org/demos/mesa-demos-8.4.0.tar.bz2): built from `src/xdemos/glxgears.c` and displayed on the M31 using the same runtime. Check for three separately colored, lit gears. Its frame count is not a display refresh measurement.
-- [Mark Kilgard’s dinoshade](https://www.opengl.org/archives/resources/code/samples/mjktips/TexShadowReflectLight.html): next scene for lighting, texture filtering, stencil reflections, and projected shadows. Needs GLU/GLUT; polygon offset uses GL 1.1 or an extension.
-- [GLQuake](https://github.com/id-Software/Quake/blob/master/WinQuake/docs/readme.glquake): game-level check with `timedemo demo1` and compatible game data. The original renderer uses texture objects, so this is a later compatibility test, not a strict GL 1.0 gate.
+For sources, build commands and fullscreen launches for Mesa gears, dinoshade
+and QuakeSpasm, see the [Termux demo recipes](demos.md). Record the same
+details for each new demo, including any local patches and rendering defects.

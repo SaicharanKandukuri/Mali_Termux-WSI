@@ -3,6 +3,7 @@
  *
  *   glBegin/glEnd/glVertex*  -> client-side vertex arrays (QUADS -> triangles, QUAD_STRIP -> TRIANGLE_STRIP,
  *                               POLYGON -> TRIANGLE_FAN)
+ *   glArrayElement           -> one indexed ES draw for array-only blocks; client-memory decode for mixed blocks
  *   glNewList/glCallList     -> recorded and replayed commands (Begin..End blocks bake into vertex arrays)
  *   glMaterialfv(GL_FRONT)   -> GL_FRONT_AND_BACK (the only one accepted by ES 1.1)
  *   glFrustum/glOrtho/...d   -> float variants from Mali
@@ -17,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <limits.h>
 
 #define GLC __attribute__((visibility("default")))
 #define RP(n, T) ((T)p_##n)
@@ -54,6 +57,7 @@ typedef void (*F_gentex)(int, unsigned*);
 typedef void (*F_teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void*);   /* and TexSubImage2D */
 typedef void (*F_texenv)(unsigned, unsigned, float);
 typedef void (*F_texgeti)(unsigned, unsigned, int*);
+typedef void (*F_getp)(unsigned, void**);
 
 static void cc_note_front(unsigned m);
 static void cc_setfront(void);
@@ -63,17 +67,26 @@ enum { OP_DRAW = 1, OP_NORMAL, OP_COLOR, OP_TEXCOORD, OP_MATERIAL, OP_SHADE, OP_
        OP_BINDTEX, OP_CALL, OP_WINDOWPOS, OP_RASTERPOS };
 
 typedef struct { int op; unsigned u[2]; float f[16]; void* p; } gl_cmd;
-typedef struct { int mode, n; float *pos, *nrm, *col, *tex; } gl_block;
+typedef struct { int mode, n, preserve_arrays; float *pos, *nrm, *col, *tex; } gl_block;
 typedef struct { gl_cmd* c; int n, cap, used; } gl_list;
+typedef struct {
+    int enabled, size, type, stride, buffer;
+    const unsigned char* ptr;
+} im_array;
+typedef struct {
+    im_array vertex, normal, color, tex;
+    int array_buffer, element_buffer, client_active, mixed_multitex;
+} im_arrays;
 
 static gl_list* gl_lists;
 static unsigned gl_lists_cap, gl_next_list = 1;
 static pthread_mutex_t gl_lmu = PTHREAD_MUTEX_INITIALIZER;
 
 static __thread struct {
-    int init, in_begin, mode, n, cap, has_n, has_c, has_t;
+    int init, in_begin, mode, n, cap, has_n, has_c, has_t, decode_elements, used_elements, elements_failed;
     float *pos, *nrm, *col, *tex;
     float cn[3], cc[4], ct[2];
+    int *elements, elements_n, elements_cap;
     unsigned rec_id;
     int rec_mode;                      /* 0x1300 GL_COMPILE, 0x1301 GL_COMPILE_AND_EXECUTE */
 } IM;
@@ -148,7 +161,54 @@ static gl_cmd* rec_cmd(int op) {
 #define REC_SKIP() (IM.rec_mode == 0x1300)      /* GL_COMPILE: do not execute */
 
 /* ---------- Drawing (Immediate Mode -> Arrays) ---------- */
-static void im_draw(int mode, int n, const float* pos, const float* nrm, const float* col, const float* tex) {
+static void im_get_array(im_array* a, unsigned cap, int size, unsigned size_pname,
+                         unsigned type_pname, unsigned stride_pname,
+                         unsigned pointer_pname, unsigned buffer_pname) {
+    memset(a, 0, sizeof *a);
+    a->enabled = RP(glIsEnabled, F_isen)(cap);
+    a->size = size;
+    if (size_pname) RP(glGetIntegerv, F_geti)(size_pname, &a->size);
+    RP(glGetIntegerv, F_geti)(type_pname, &a->type);
+    RP(glGetIntegerv, F_geti)(stride_pname, &a->stride);
+    RP(glGetIntegerv, F_geti)(buffer_pname, &a->buffer);
+    RP(glGetPointerv, F_getp)(pointer_pname, (void**)&a->ptr);
+}
+
+static void im_get_arrays(im_arrays* a) {
+    memset(a, 0, sizeof *a);
+    RP(glGetIntegerv, F_geti)(0x8894, &a->array_buffer);         /* ARRAY_BUFFER_BINDING */
+    RP(glGetIntegerv, F_geti)(0x8895, &a->element_buffer);       /* ELEMENT_ARRAY_BUFFER_BINDING */
+    RP(glGetIntegerv, F_geti)(0x84E1, &a->client_active);        /* CLIENT_ACTIVE_TEXTURE */
+    im_get_array(&a->vertex, 0x8074, 4, 0x807A, 0x807B, 0x807C, 0x808E, 0x8896);
+    im_get_array(&a->normal, 0x8075, 3, 0,      0x807E, 0x807F, 0x808F, 0x8897);
+    im_get_array(&a->color,  0x8076, 4, 0x8081, 0x8082, 0x8083, 0x8090, 0x8898);
+    if (a->client_active != 0x84C0) RP(glClientActiveTexture, F_ui)(0x84C0);
+    im_get_array(&a->tex,    0x8078, 4, 0x8088, 0x8089, 0x808A, 0x8092, 0x889A);
+    if (a->client_active != 0x84C0) RP(glClientActiveTexture, F_ui)((unsigned)a->client_active);
+}
+
+static void im_get_mixed_arrays(im_arrays* a) {
+    /* shortcut: mixed blocks support texture unit 0 only, compact per-unit arrays before accepting multitexture */
+    im_get_arrays(a);
+    int units = 1;
+    RP(glGetIntegerv, F_geti)(0x84E2, &units);                    /* MAX_TEXTURE_UNITS */
+    for (int i = 1; i < units; i++) {
+        RP(glClientActiveTexture, F_ui)(0x84C0u + (unsigned)i);
+        if (RP(glIsEnabled, F_isen)(0x8078)) a->mixed_multitex = 1;
+    }
+    if (units > 1) RP(glClientActiveTexture, F_ui)((unsigned)a->client_active);
+}
+
+static void im_restore_pointer(const im_array* a, int kind) {
+    RP(glBindBuffer, F_uiui)(0x8892, (unsigned)a->buffer);
+    if (kind == 1) RP(glNormalPointer, F_nptr)((unsigned)a->type, a->stride, a->ptr);
+    else if (kind == 2) RP(glColorPointer, F_vptr)(a->size, (unsigned)a->type, a->stride, a->ptr);
+    else if (kind == 3) RP(glTexCoordPointer, F_vptr)(a->size, (unsigned)a->type, a->stride, a->ptr);
+    else RP(glVertexPointer, F_vptr)(a->size, (unsigned)a->type, a->stride, a->ptr);
+}
+
+static void im_draw(int mode, int n, const float* pos, const float* nrm, const float* col, const float* tex,
+                    int preserve_arrays) {
     unsigned gm = 0;
     unsigned short* ix = NULL;
     int cnt = n;
@@ -171,22 +231,44 @@ static void im_draw(int mode, int n, const float* pos, const float* nrm, const f
     case 9: gm = 6; break;                                      /* GL_POLYGON -> TRIANGLE_FAN */
     default: return;
     }
-    static const unsigned caps[4] = { 0x8074, 0x8075, 0x8076, 0x8078 };   /* VERTEX, NORMAL, COLOR, TEXCOORD array */
-    int want[4] = { 1, nrm != NULL, col != NULL, tex != NULL }, prev[4], i;
-    for (i = 0; i < 4; i++) {
-        prev[i] = RP(glIsEnabled, F_isen)(caps[i]);
+    static const unsigned caps[4] = { 0x8074, 0x8075, 0x8076, 0x8078 };
+    int want[4] = { 1, nrm != NULL, col != NULL, tex != NULL };
+    im_arrays saved;
+    int prev[4];
+    if (preserve_arrays) {
+        im_get_arrays(&saved);
+        prev[0] = saved.vertex.enabled; prev[1] = saved.normal.enabled;
+        prev[2] = saved.color.enabled; prev[3] = saved.tex.enabled;
+        if (saved.client_active != 0x84C0) RP(glClientActiveTexture, F_ui)(0x84C0);
+        RP(glBindBuffer, F_uiui)(0x8892, 0);                     /* immediate arrays are host pointers */
+    } else {
+        for (int i = 0; i < 4; i++) prev[i] = RP(glIsEnabled, F_isen)(caps[i]);
+    }
+    for (int i = 0; i < 4; i++)
         if (want[i] != prev[i])
             (want[i] ? RP(glEnableClientState, F_ui) : RP(glDisableClientState, F_ui))(caps[i]);
-    }
     RP(glVertexPointer, F_vptr)(3, 0x1406, 0, pos);
     if (nrm) RP(glNormalPointer, F_nptr)(0x1406, 0, nrm);
     if (col) RP(glColorPointer, F_vptr)(4, 0x1406, 0, col);
     if (tex) RP(glTexCoordPointer, F_vptr)(2, 0x1406, 0, tex);
+    if (ix && preserve_arrays && saved.element_buffer) RP(glBindBuffer, F_uiui)(0x8893, 0);
     if (ix) RP(glDrawElements, F_de)(gm, cnt, 0x1403, ix);
     else    RP(glDrawArrays, F_da)(gm, 0, cnt);
-    for (i = 0; i < 4; i++)
+    if (ix && preserve_arrays && saved.element_buffer)
+        RP(glBindBuffer, F_uiui)(0x8893, (unsigned)saved.element_buffer);
+    if (preserve_arrays) {
+        im_restore_pointer(&saved.vertex, 0);
+        im_restore_pointer(&saved.normal, 1);
+        im_restore_pointer(&saved.color, 2);
+        im_restore_pointer(&saved.tex, 3);
+    }
+    for (int i = 0; i < 4; i++)
         if (want[i] != prev[i])
             (want[i] ? RP(glDisableClientState, F_ui) : RP(glEnableClientState, F_ui))(caps[i]);
+    if (preserve_arrays) {
+        RP(glBindBuffer, F_uiui)(0x8892, (unsigned)saved.array_buffer);
+        if (saved.client_active != 0x84C0) RP(glClientActiveTexture, F_ui)((unsigned)saved.client_active);
+    }
     free(ix);
     /* After block, "current" values are those of the last vertex */
     int l = n - 1;
@@ -201,7 +283,7 @@ static float* fdup(const float* s, size_t n) {
     return d;
 }
 
-static void im_vertex(float x, float y, float z) {
+static void im_emit_vertex(float x, float y, float z) {
     if (!IM.in_begin) return;
     if (IM.n == IM.cap) {
         IM.cap = IM.cap ? IM.cap * 2 : 256;
@@ -217,15 +299,212 @@ static void im_vertex(float x, float y, float z) {
     IM.n++;
 }
 
+static int im_type_size(unsigned type) {
+    switch (type) {
+    case 0x1400: case 0x1401: return 1;                            /* BYTE / UNSIGNED_BYTE */
+    case 0x1402: case 0x1403: return 2;                            /* SHORT / UNSIGNED_SHORT */
+    case 0x1404: case 0x1405: case 0x1406: return 4;               /* INT / UNSIGNED_INT / FLOAT */
+    case 0x140A: return 8;                                         /* DOUBLE */
+    default: return 0;
+    }
+}
+
+static float im_component(const unsigned char* p, unsigned type, int normalized) {
+    signed char b; unsigned char ub; short s; unsigned short us;
+    int i; unsigned ui; float f; double d;
+    switch (type) {
+    case 0x1400: memcpy(&b, p, 1);  return normalized ? (b == SCHAR_MIN ? -1.0f : b / 127.0f) : (float)b;
+    case 0x1401: memcpy(&ub, p, 1); return normalized ? ub / 255.0f : (float)ub;
+    case 0x1402: memcpy(&s, p, 2);  return normalized ? (s == SHRT_MIN ? -1.0f : s / 32767.0f) : (float)s;
+    case 0x1403: memcpy(&us, p, 2); return normalized ? us / 65535.0f : (float)us;
+    case 0x1404: memcpy(&i, p, 4);  return normalized ? (i == INT_MIN ? -1.0f : i / 2147483647.0f) : (float)i;
+    case 0x1405: memcpy(&ui, p, 4); return normalized ? ui / 4294967295.0f : (float)ui;
+    case 0x1406: memcpy(&f, p, 4);  return f;
+    case 0x140A: memcpy(&d, p, 8);  return (float)d;
+    default: return 0.0f;
+    }
+}
+
+static int im_read(const im_array* a, int index, float* out, int normalized) {
+    int bytes = im_type_size((unsigned)a->type);
+    if (!a->enabled) return 1;
+    if (a->buffer || !a->ptr || bytes <= 0 || a->size < 1 || a->size > 4 || a->stride < 0) return 0;
+    size_t stride = a->stride ? (size_t)a->stride : (size_t)a->size * (size_t)bytes;
+    if ((size_t)index > SIZE_MAX / stride) return 0;
+    const unsigned char* p = a->ptr + (size_t)index * stride;
+    for (int c = 0; c < a->size; c++) out[c] = im_component(p + (size_t)c * bytes, (unsigned)a->type, normalized);
+    return 1;
+}
+
+static int im_decode_element(const im_arrays* a, int index, int emit) {
+    float v[4] = { 0, 0, 0, 1 }, x[4];
+    if (index < 0 || (a->normal.enabled && !im_read(&a->normal, index, x, 1))) return 0;
+    if (a->normal.enabled) { memcpy(IM.cn, x, 3 * sizeof(float)); IM.has_n = 1; }
+    if (a->color.enabled && !im_read(&a->color, index, x, 1)) return 0;
+    if (a->color.enabled) {
+        IM.cc[0] = x[0]; IM.cc[1] = a->color.size > 1 ? x[1] : 1.0f;
+        IM.cc[2] = a->color.size > 2 ? x[2] : 1.0f; IM.cc[3] = a->color.size > 3 ? x[3] : 1.0f;
+        IM.has_c = 1;
+    }
+    if (a->tex.enabled && !im_read(&a->tex, index, x, 0)) return 0;
+    if (a->tex.enabled) {
+        IM.ct[0] = x[0]; IM.ct[1] = a->tex.size > 1 ? x[1] : 0.0f; IM.has_t = 1;
+    }
+    if (emit && a->vertex.enabled) {
+        if (!im_read(&a->vertex, index, v, 0)) return 0;
+        im_emit_vertex(v[0], a->vertex.size > 1 ? v[1] : 0.0f, a->vertex.size > 2 ? v[2] : 0.0f);
+    }
+    return 1;
+}
+
+static void im_decode_warning(void) {
+    static int warned;
+    if (!warned) {
+        warned = 1;
+        fprintf(stderr, "libGL.so: glArrayElement block rejected (unsupported mixed arrays or allocation failure)\n");
+    }
+}
+
+static int im_flush_elements(void) {
+    if (!IM.elements_n) return 1;
+    im_arrays arrays;
+    im_get_mixed_arrays(&arrays);
+    if (arrays.mixed_multitex) {
+        IM.elements_n = 0;
+        IM.decode_elements = 1;
+        IM.used_elements = 1;
+        IM.elements_failed = 1;
+        im_decode_warning();
+        return 0;
+    }
+    for (int i = 0; i < IM.elements_n; i++)
+        if (!im_decode_element(&arrays, IM.elements[i], 1)) {
+            IM.elements_n = 0;
+            IM.decode_elements = 1;
+            IM.elements_failed = 1;
+            im_decode_warning();
+            return 0;
+        }
+    IM.elements_n = 0;
+    IM.decode_elements = 1;
+    IM.used_elements = 1;
+    return 1;
+}
+
+static void im_vertex(float x, float y, float z) {
+    if (!IM.in_begin) return;
+    im_flush_elements();
+    IM.decode_elements = 1;
+    im_emit_vertex(x, y, z);
+}
+
+static int im_draw_elements(int mode, const int* elements, int n) {
+    unsigned gm = (unsigned)mode;
+    int count = n, max = 0;
+    if (mode == 8) gm = 5;                                      /* QUAD_STRIP */
+    else if (mode == 9) gm = 6;                                 /* POLYGON */
+    else if (mode < 0 || mode > 7) return 0;
+    for (int i = 0; i < n; i++) {
+        if (elements[i] < 0) return 0;
+        if (elements[i] > max) max = elements[i];
+    }
+    if (mode == 7) {
+        int quads = n / 4;
+        if (quads <= 0 || quads > INT_MAX / 6 || (size_t)quads > SIZE_MAX / (6 * sizeof(int))) return 0;
+        int* q = malloc((size_t)quads * 6 * sizeof *q);
+        if (!q) return 0;
+        for (int i = 0; i < quads; i++) {
+            int b = i * 4, o = i * 6;
+            q[o] = elements[b]; q[o + 1] = elements[b + 1]; q[o + 2] = elements[b + 2];
+            q[o + 3] = elements[b]; q[o + 4] = elements[b + 2]; q[o + 5] = elements[b + 3];
+        }
+        elements = q; count = quads * 6; gm = 4;
+    }
+    unsigned short* short_elements = NULL;
+    const void* indices = elements;
+    unsigned type = 0x1405;                                     /* UNSIGNED_INT (OES_element_index_uint) */
+    if (max <= 65535) {
+        if ((size_t)count > SIZE_MAX / sizeof *short_elements) {
+            if (mode == 7) free((void*)elements);
+            return 0;
+        }
+        short_elements = malloc((size_t)count * sizeof *short_elements);
+        if (!short_elements) { if (mode == 7) free((void*)elements); return 0; }
+        for (int i = 0; i < count; i++) short_elements[i] = (unsigned short)elements[i];
+        indices = short_elements; type = 0x1403;
+    }
+    int ebo = 0;
+    RP(glGetIntegerv, F_geti)(0x8895, &ebo);                      /* ELEMENT_ARRAY_BUFFER_BINDING */
+    if (ebo) RP(glBindBuffer, F_uiui)(0x8893, 0);
+    RP(glDrawElements, F_de)(gm, count, type, indices);
+    if (ebo) RP(glBindBuffer, F_uiui)(0x8893, (unsigned)ebo);
+    free(short_elements);
+    if (mode == 7) free((void*)elements);
+    return 1;
+}
+
+GLC void glArrayElement(int index) {
+    if (!T_glx.ctx || T_glx.ctx->ver != 1 || T_glx.ctx->es_native || !IM.in_begin || index < 0) return;
+    if (IM.decode_elements) {
+        im_arrays arrays;
+        im_get_mixed_arrays(&arrays);
+        IM.used_elements = 1;
+        if (arrays.mixed_multitex || !im_decode_element(&arrays, index, 1)) {
+            IM.elements_failed = 1;
+            im_decode_warning();
+        }
+        return;
+    }
+    if (IM.elements_n == IM.elements_cap) {
+        if (IM.elements_cap > INT_MAX / 2) {
+            IM.elements_n = 0; IM.decode_elements = IM.elements_failed = 1;
+            im_decode_warning(); return;
+        }
+        int cap = IM.elements_cap ? IM.elements_cap * 2 : 256;
+        if ((size_t)cap > SIZE_MAX / sizeof *IM.elements) {
+            IM.elements_n = 0; IM.decode_elements = IM.elements_failed = 1;
+            im_decode_warning(); return;
+        }
+        int* elements = realloc(IM.elements, (size_t)cap * sizeof *elements);
+        if (!elements) {
+            IM.elements_n = 0; IM.decode_elements = IM.elements_failed = 1;
+            im_decode_warning(); return;
+        }
+        IM.elements = elements; IM.elements_cap = cap;
+    }
+    IM.elements[IM.elements_n++] = index;
+}
+
 GLC void glBegin(unsigned mode) {
     im_init();
     gl_warn_es("glBegin");
-    IM.in_begin = 1; IM.mode = (int)mode; IM.n = 0;
+    IM.in_begin = 1; IM.mode = (int)mode; IM.n = 0; IM.elements_n = 0;
+    IM.decode_elements = IM.rec_id != 0; IM.used_elements = IM.elements_failed = 0;
     IM.has_n = IM.has_c = IM.has_t = 0;
 }
 
 GLC void glEnd(void) {
     if (!IM.in_begin) return;
+    if (IM.elements_n && !IM.decode_elements && IM.n == 0) {
+        im_arrays arrays;
+        im_get_arrays(&arrays);
+        if (arrays.vertex.enabled && !im_draw_elements(IM.mode, IM.elements, IM.elements_n))
+            im_decode_warning();
+        if (im_decode_element(&arrays, IM.elements[IM.elements_n - 1], 0)) {
+            if (arrays.normal.enabled) RP(glNormal3f, F_fff)(IM.cn[0], IM.cn[1], IM.cn[2]);
+            if (arrays.color.enabled) RP(glColor4f, F_ffff)(IM.cc[0], IM.cc[1], IM.cc[2], IM.cc[3]);
+            if (arrays.tex.enabled) RP(glMultiTexCoord4f, F_utex)(0x84C0, IM.ct[0], IM.ct[1], 0.0f, 1.0f);
+        } else if (!arrays.vertex.enabled) im_decode_warning();
+        IM.elements_n = 0;
+        IM.in_begin = 0;
+        return;
+    }
+    im_flush_elements();
+    if (IM.elements_failed) {
+        IM.in_begin = 0;
+        IM.n = 0;
+        return;
+    }
     IM.in_begin = 0;
     int n = IM.n;
     if (n <= 0) return;
@@ -233,7 +512,7 @@ GLC void glEnd(void) {
     if (IM.rec_id) {
         gl_block* b = calloc(1, sizeof *b);
         if (b) {
-            b->mode = IM.mode; b->n = n;
+            b->mode = IM.mode; b->n = n; b->preserve_arrays = IM.used_elements;
             b->pos = fdup(IM.pos, (size_t)n * 3);
             if (nr) b->nrm = fdup(nr, (size_t)n * 3);
             if (co) b->col = fdup(co, (size_t)n * 4);
@@ -242,7 +521,7 @@ GLC void glEnd(void) {
         }
         if (REC_SKIP()) return;
     }
-    im_draw(IM.mode, n, IM.pos, nr, co, te);
+    im_draw(IM.mode, n, IM.pos, nr, co, te, IM.used_elements);
 }
 
 GLC void glVertex2f(float x, float y)                { im_vertex(x, y, 0.0f); }
@@ -287,6 +566,7 @@ GLC void glRectsv(const short* a, const short* b)            { glRectf((float)a[
 /* ---------- Current Attributes (recordable) ---------- */
 GLC void glNormal3f(float x, float y, float z) {
     im_init();
+    if (IM.in_begin && IM.elements_n) im_flush_elements();
     IM.cn[0] = x; IM.cn[1] = y; IM.cn[2] = z;
     if (IM.in_begin) { IM.has_n = 1; return; }
     if (IM.rec_id) {
@@ -307,6 +587,7 @@ GLC void glNormal3bv(const signed char* v) { glNormal3f(v[0] / 127.0f, v[1] / 12
 
 GLC void glColor4f(float r, float g, float b, float a) {
     im_init();
+    if (IM.in_begin && IM.elements_n) im_flush_elements();
     IM.cc[0] = r; IM.cc[1] = g; IM.cc[2] = b; IM.cc[3] = a;
     if (IM.in_begin) { IM.has_c = 1; return; }
     if (IM.rec_id) {
@@ -338,6 +619,7 @@ GLC void glColor4usv(const unsigned short* v)   { glColor4us(v[0], v[1], v[2], v
 /* ---------- TexCoord ---------- */
 GLC void glTexCoord2f(float s, float t) {
     im_init();
+    if (IM.in_begin && IM.elements_n) im_flush_elements();
     IM.ct[0] = s; IM.ct[1] = t;
     if (IM.in_begin) { IM.has_t = 1; return; }
     if (IM.rec_id) {
@@ -726,7 +1008,7 @@ GLC void glDrawPixels(int w, int h, unsigned fmt, unsigned type, const void *px)
     float s = (float)w / (float)g_dp_pw, t = (float)h / (float)g_dp_ph;
     float v[12] = { x0, y0, 0,   x1, y0, 0,   x0, y1, 0,   x1, y1, 0 };
     float c[8]  = { 0, 0,        s, 0,         0, t,        s, t };
-    im_draw(8, 4, v, NULL, NULL, c);                             /* QUAD_STRIP -> TRIANGLE_STRIP */
+    im_draw(8, 4, v, NULL, NULL, c, 0);                          /* QUAD_STRIP -> TRIANGLE_STRIP */
 
     /* --- Restore State --- */
     RP(glPopMatrix, F_v)();                                      /* Modelview */
@@ -801,7 +1083,7 @@ GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymo
             RP(glMatrixMode, F_ui)(0x1700);                           /* MODELVIEW */
             RP(glPushMatrix, F_v)(); RP(glLoadIdentity, F_v)();
 
-            im_draw(7, (int)(nq * 4), v, NULL, NULL, NULL);           /* GL_QUADS -> triunghiuri */
+            im_draw(7, (int)(nq * 4), v, NULL, NULL, NULL, 0);        /* GL_QUADS -> triunghiuri */
 
             RP(glPopMatrix, F_v)();
             RP(glMatrixMode, F_ui)(0x1701); RP(glPopMatrix, F_v)();
@@ -823,7 +1105,7 @@ static void list_exec(unsigned id, int depth) {
     for (int i = 0; i < L->n; i++) {
         gl_cmd* c = &L->c[i];
         switch (c->op) {
-        case OP_DRAW: { gl_block* b = c->p; im_draw(b->mode, b->n, b->pos, b->nrm, b->col, b->tex); break; }
+        case OP_DRAW: { gl_block* b = c->p; im_draw(b->mode, b->n, b->pos, b->nrm, b->col, b->tex, b->preserve_arrays); break; }
         case OP_NORMAL:    RP(glNormal3f, F_fff)(c->f[0], c->f[1], c->f[2]); break;
         case OP_COLOR:     RP(glColor4f, F_ffff)(c->f[0], c->f[1], c->f[2], c->f[3]); break;
         case OP_TEXCOORD:  RP(glMultiTexCoord4f, F_utex)(0x84C0, c->f[0], c->f[1], 0.0f, 1.0f); break;

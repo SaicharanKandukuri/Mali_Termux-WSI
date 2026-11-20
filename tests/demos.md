@@ -129,7 +129,7 @@ replace `+playdemo demo1` with `+timedemo demo1`.
 
 ## OpenArena 0.8.8 (ioquake3 desktop GL 1.1)
 
-Check the current blocker before downloading the game. From the setup above:
+Check the desktop array-element path before downloading the game. From the setup above:
 
 ```sh
 clang -std=c99 -Wall -Wextra -Werror "$W/tests/gl11-array-element.c" \
@@ -140,12 +140,13 @@ env -u LD_LIBRARY_PATH -u GLX_ES LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEODRIVER=x11 \
   SDL_VIDEO_GL_DRIVER="$PREFIX/lib/libGL.so.1" "$D/array-element"
 ```
 
-On the M31 at `671570c`, both drivers drew the indexed strip with
-`glDrawElements`. Mesa (llvmpipe) also drew it with `glArrayElement`.
-ZenFox reported desktop GL 1.5 but the function was absent from SDL, GLX,
-and the library exports. Exit 0 means the SDL entry produced the expected
-samples, 1 means lookup or drawing failed, and 2 means setup or the control
-failed. This is a GL 1.1 check, separate from the GL 1.0 baseline.
+On the M31 at `671570c`, only Mesa (llvmpipe) resolved `glArrayElement`.
+The fixed desktop-on-GLES1 shim and Mesa both pass the strip, subsequent
+indexed draw, strided client arrays, mixed vertices, VBO/EBO and two-texture
+checks. Pure element strips use the driver's arrays directly. Mixed blocks
+(elements interleaved with explicit vertices or attributes) support client
+memory and texture unit 0, not buffer-backed attributes or multiple texture
+coordinate arrays. This tests a subset of desktop GL 1.1, not conformance.
 
 To reproduce with the unmodified engine, build only the classic renderer
 and use the OpenArena data (no retail Quake III files needed):
@@ -171,6 +172,15 @@ zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" ./ioquake3.arm64
   +set bot_minplayers 3 +map oa_dm1
 ```
 
-The M31 loaded all nine PK3s and selected X11, then
-[ioquake3's required-function check](https://github.com/ioquake/ioq3/blob/e505e34d79d40585a5e2731c459404aefb0b2d1b/code/sdl/sdl_glimp.c#L262-L323)
-stopped before the map loaded. Do not count this as a rendered match.
+The stock engine now passes [its required-function check](https://github.com/ioquake/ioq3/blob/e505e34d79d40585a5e2731c459404aefb0b2d1b/code/sdl/sdl_glimp.c#L262-L323)
+and logs `rendering primitives: multiple glArrayElement`. Once a bot has
+entered the map, enter these commands in the game console:
+
+```text
+team spectator
+follownext
+record zen-oa
+```
+
+After a few seconds, use `stoprecord`, then `demo zen-oa` to replay the match.
+The recording is in `$D/oa/profile/baseoa/demos/`.

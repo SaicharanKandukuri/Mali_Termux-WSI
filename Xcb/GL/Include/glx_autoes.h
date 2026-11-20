@@ -33,7 +33,7 @@ static const char* const ae_ff_syms[] = {
     "glColor3f", "glColor3fv", "glColor3ub", "glColor4f", "glColor4fv", "glColor4ub",
     "glTexCoord2f", "glTexCoord2fv", "glTexCoord2d", "glTexCoord2i",
     "glLightfv", "glLightf", "glLightModelfv", "glLightModeli", "glMaterialfv", "glMaterialf",
-    "glShadeModel", "glColorMaterial", "glVertexPointer", "glNormalPointer", "glColorPointer",
+    "glShadeModel", "glColorMaterial", "glArrayElement", "glVertexPointer", "glNormalPointer", "glColorPointer",
     "glTexCoordPointer", "glEnableClientState", "glDisableClientState", "glTexEnvi", "glTexEnvf",
     "glTexEnvfv", "glNewList", "glEndList", "glCallList", "glCallLists", "glGenLists", "glDeleteLists",
     "glRasterPos2f", "glRasterPos2i", "glRasterPos3f", "glDrawPixels", "glFogf", "glFogfv", "glFogi",

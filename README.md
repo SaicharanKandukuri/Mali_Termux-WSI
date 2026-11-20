@@ -51,7 +51,7 @@ ARM Mali GPU, **without root** and **without Mesa/Zink**.
 | Library | Path | Output | Summary |
 |---|---|---|---|
 | Vulkan | `API/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
-| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.3 emulated on GLES |
+| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.5 emulated on GLES |
 | GLFW | `API/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
 | GLU | `API/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
 | GLUT | `API/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
@@ -67,7 +67,7 @@ Repository layout:
     API/Vulkan/        Vulkan loader, WSI, and shims
     API/GL/            Desktop OpenGL, GLX, and EGL shims
     API/GLES/          GLES 1.x/2.x/3.x shim (zero-copy WSI)
-    API/EGL/           EGL shim (X11/API/GBM platforms)
+    API/EGL/           EGL shim (X11/XCB/GBM platforms)
     API/GL/GLFW/       Custom GLFW 3.6 implementation
     API/GL/GLU/        Custom GLU 1.3 implementation
     API/GL/GLUT/       Custom GLUT implementation

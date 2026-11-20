@@ -32,6 +32,7 @@ Mostly those people was on Discord
 
 - [Overview](#overview)
 - [Building](#building)
+- [Desktop GL 1.0 baseline in Termux](tests/README.md)
 - [Vulkan](#vulkan)
 - [OpenGL](#opengl)
 - [GLFW](#glfw)

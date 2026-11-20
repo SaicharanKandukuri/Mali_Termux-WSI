@@ -107,7 +107,7 @@ GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
 GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
 
-.PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl clean
+.PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl gl-runtime clean
 
 all: vulkan gbm drm dri gles egl gl glu glut glfw
 
@@ -121,6 +121,11 @@ dri:    $(DRI_OUT)
 gles:   $(GLES_OUT)
 egl:    $(EGL_OUT)
 gl:     $(GL_OUT)
+
+# Keep Android's unversioned libEGL.so visible to vendor gralloc.
+gl-runtime: $(GL_OUT) $(EGL_OUT)
+	@mkdir -p $(BUILD)/gl-runtime
+	ln -sf ../libGL.so.1 ../libEGL.so.1 $(BUILD)/gl-runtime/
 
 $(VK_OUT): $(VK_SRC) $(VK_DEPS)
 	@mkdir -p $(BUILD)

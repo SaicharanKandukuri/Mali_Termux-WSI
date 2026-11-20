@@ -94,7 +94,12 @@ GLA_FWDV(glDeleteRenderbuffersEXT,  DeleteRenderbuffers,  (GLsizei n, const GLui
 GLA_FWDV(glRenderbufferStorageEXT,  RenderbufferStorage,  (GLenum t, GLenum f, GLsizei w, GLsizei h), (t, f, w, h))
 GLA_FWDV(glFramebufferTexture2DEXT, FramebufferTexture2D, (GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l), (t, a, tt, tex, l))
 GLA_FWDV(glFramebufferRenderbufferEXT, FramebufferRenderbuffer, (GLenum t, GLenum a, GLenum rt, GLuint r), (t, a, rt, r))
-GLA_FWDV(glGenerateMipmapEXT,       GenerateMipmap,       (GLenum t), (t))
+GLC void glGenerateMipmapEXT(GLenum t) {
+    /* Mali can export both names, but only the OES entry generates levels on ES1. */
+    void (*fn)(GLenum) = (T_glx.ctx && T_glx.ctx->ver == 1 && p_glGenerateMipmapOES)
+        ? (void (*)(GLenum))p_glGenerateMipmapOES : GLA(GenerateMipmap, void (*)(GLenum));
+    if (fn) fn(t);
+}
 GLA_FWD(GLenum,    glCheckFramebufferStatusEXT, CheckFramebufferStatus, (GLenum t), (t))
 GLA_FWD(GLboolean, glIsFramebufferEXT,          IsFramebuffer,          (GLuint f), (f))
 GLA_FWD(GLboolean, glIsRenderbufferEXT,         IsRenderbuffer,         (GLuint r), (r))

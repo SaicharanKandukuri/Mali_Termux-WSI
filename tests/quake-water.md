@@ -1,11 +1,11 @@
 # Quake: white water on Mali-G72
 
-On the Galaxy M31, the fixed-function ZenFox runtime rendered textured walls in
-QuakeSpasm but showed solid white water in *The Necropolis*. Launch with
-`-nowarpmipmaps +r_oldwater 0` to keep the normal animated warp without
-generating mipmaps for it. Classic water (`+r_oldwater 1`) also works.
+On the Galaxy M31 the fixed driver renders QuakeSpasm's normal water in
+*The Necropolis* with warp mipmaps enabled. Keep `r_oldwater 0` and omit
+`-nowarpmipmaps`. On older builds, `-nowarpmipmaps` is a workaround.
 
-To reproduce the failure, start **without** `-nowarpmipmaps` and enter these **Quake console** commands.
+To check the fix (or reproduce the failure with the previous driver), start
+**without** `-nowarpmipmaps` and enter these **Quake console** commands.
 Wait for the map to finish loading before entering `setpos`:
 
 ```text
@@ -15,7 +15,7 @@ r_oldwater 0
 ```
 
 Close the console and leave the camera still. Compare `r_oldwater 1`, then
-`r_oldwater 0` again. On this device the same surface went **white → textured
+`r_oldwater 0` again. Before the fix the same surface went **white → textured
 → white**; the brickwork stayed textured. The face uses map texture `*04water1`.
 This checks the surface from above, not underwater screen effects.
 
@@ -47,3 +47,11 @@ minified image stayed blue (exit 1); the GLES OES entry regenerated the mips,
 turning the samples red and green (exit 0). Exit 2 means the display, context
 or requested entry point was unavailable. This tests the entry point through
 ZenFox, not just its presence in an extension string.
+
+After the fix the desktop EXT wrapper selects the vendor OES function when it
+is exported and the calling thread has a GLES 1 context. Other contexts keep
+the previous lookup. On the M31 the same probe binary failed with the old
+library but passed with the fixed one (both EXT and OES). The fixed library
+also passed the GL 1.0 smoke test. Quake logged `FOUND: glGenerateMipmapEXT`
+and showed textured water at the camera above without either workaround.
+The pixel probe uses immediate-mode drawing; it does not verify GLES 2/3.

@@ -2,7 +2,8 @@
 
 Run the setup and one demo at a time in the same shell. This uses a private
 build directory, not replacement libraries in `$PREFIX/lib`. Tested graphics
-stack: Galaxy M31, Android 13, Mali-G72, driver revision `471e044`.
+stack: Galaxy M31, Android 13, Mali-G72. The original demos used revision
+`471e044`; the default Quake water needs the subsequent ES1 mipmap fix.
 
 ## One-time setup
 
@@ -106,12 +107,12 @@ cp "$D/quakespasm/Quake/quakespasm.pak" .
 
 zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" \
   "$D/quakespasm/Quake/quakespasm" -basedir "$PWD" -current -fullscreen \
-  -nostdin -nojoy -novbo -noglsl -nowarpmipmaps -condebug +r_lightmapwide 0 +r_oldwater 0 +playdemo demo1
+  -nostdin -nojoy -novbo -noglsl -condebug +r_lightmapwide 0 +r_oldwater 0 +playdemo demo1
 ```
 
 The engine patch uses `glFogf` and explicit RGBA internal formats. The original
 numeric texture formats left walls white on this driver. Check `qconsole.log`
 for the video mode, ARM renderer and `Playing demo from demo1.dem`. For the
-[water comparison](quake-water.md), omit `-nowarpmipmaps` to reproduce the
-M31's mipmap-generation failure. To measure throughput instead of showing normal playback,
+[water regression](quake-water.md), keep warp mipmaps enabled and check the
+same surface in E1M3. To measure throughput instead of showing normal playback,
 replace `+playdemo demo1` with `+timedemo demo1`.

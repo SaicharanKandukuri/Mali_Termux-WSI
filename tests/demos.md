@@ -90,21 +90,11 @@ light angle, desktop OpenGL showed the same shading. With lighting, reflection
 and shadows off, the solid-color dinosaur covered exactly the same 5,000 pixels
 on both renderers in a 270×500 sample, with or without face culling.
 
-The confirmed M31 mismatch is the **floor**. In the default (non-mipmapped)
-run, the demo uploads RGB bytes with the desktop internal format `3`.
-Desktop GL accepted it; ZenFox on the M31 returned `GL_INVALID_VALUE` and
-the green rings were absent. To reproduce the app-side comparison after
-building the original above, change **only** that argument in a diagnostic copy:
-
-```sh
-cd "$D/dino"
-sed 's/glTexImage2D(GL_TEXTURE_2D, 0, 3, 16, 16/glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 16, 16/' dinoshade.c > dinoshade-rgb.c
-clang -Wno-incompatible-function-pointer-types dinoshade-rgb.c -L"$W/build" -lglut -lGLU -lGL -lm -o dinoshade-rgb
-zen ./dinoshade-rgb
-```
-
-The same upload then returned no error and the rings reappeared. This is a
-workaround for the demo, not a fix for desktop numeric internal formats.
+Look for green rings on the floor. Leave the demo's original texture call
+alone: it uploads RGB bytes and requests three components. The desktop GL
+shim translates `3` to `GL_RGB` for GLES1. On the M31, the old driver
+returned `GL_INVALID_VALUE`; the fixed driver rendered the same pixels as
+the explicit `GL_RGB` comparison at a fixed camera and light angle.
 
 ## QuakeSpasm (Quake shareware)
 
@@ -129,8 +119,9 @@ zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" \
   -nostdin -nojoy -novbo -noglsl -condebug +r_lightmapwide 0 +r_oldwater 0 +playdemo demo1
 ```
 
-The engine patch uses `glFogf` and explicit RGBA internal formats. The original
-numeric texture formats left walls white on this driver. Check `qconsole.log`
+Keep the engine patch: it uses `glFogf` and explicit RGBA internal formats.
+Unlike dinoshade, Quake also uploads RGBA bytes when requesting three
+components. The shim does not convert between those layouts. Check `qconsole.log`
 for the video mode, ARM renderer and `Playing demo from demo1.dem`. For the
 [water regression](quake-water.md), keep warp mipmaps enabled and check the
 same surface in E1M3. To measure throughput instead of showing normal playback,

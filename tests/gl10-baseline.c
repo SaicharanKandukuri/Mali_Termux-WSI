@@ -39,6 +39,39 @@ static void triangle_z(GLfloat z)
     glEnd();
 }
 
+static int component_textures(void)
+{
+    static const struct {
+        const char *name;
+        GLenum format;
+        GLubyte data[4], rgb[3];
+    } cases[] = {
+        {"1/L",    GL_LUMINANCE,       {192},              {192,192,192}},
+        {"2/LA",   GL_LUMINANCE_ALPHA, {192,128},          {96,96,223}},
+        {"3/RGB",  GL_RGB,             {31,143,31},        {31,143,31}},
+        {"4/RGBA", GL_RGBA,            {32,128,192,128},   {16,64,223}}
+    };
+    int ok = 1;
+    glEnable(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glColor4f(1, 1, 1, 1);
+    glClearColor(0, 0, 1, 1);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    for (int j = 0; j < 4; ++j) {
+        glTexImage2D(GL_TEXTURE_2D, 0, j+1, 1, 1, 0, cases[j].format,
+                     GL_UNSIGNED_BYTE, cases[j].data);
+        ok &= errors(cases[j].name);
+        glClear(GL_COLOR_BUFFER_BIT);
+        triangle_z(0);
+        ok &= sample(cases[j].name, 64, 64, cases[j].rgb[0], cases[j].rgb[1], cases[j].rgb[2]);
+    }
+    glDisable(GL_BLEND);
+    glDisable(GL_TEXTURE_2D);
+    return ok;
+}
+
 static int context_state(const char *label, int blend, int red, int blue)
 {
     GLfloat color[4] = {-1, -1, -1, -1};
@@ -158,6 +191,7 @@ int main(int argc, char **argv)
     ok &= context_state("context-A-restored", 1, 0, 0);
     glXDestroyContext(d, other);
     glDisable(GL_BLEND);
+    ok &= component_textures();
     glClearColor(0, 0, 1, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glColor3f(0, 1, 0);

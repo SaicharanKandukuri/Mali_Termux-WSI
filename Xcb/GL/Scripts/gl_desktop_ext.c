@@ -129,6 +129,10 @@ GLC void glDrawElements(unsigned mode, int count, unsigned type, const void* ind
 }
 
 GLC void glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void* p) {
+    /* GL 1.0 component counts; ES1 needs the named base format. Only alias identical layouts. */
+    static const unsigned base[] = {0x1909, 0x190A, 0x1907, 0x1908}; /* L, LA, RGB, RGBA */
+    if (i >= 1 && i <= 4 && f == base[i-1] && emu_ver() == 1)
+        i = (int)f;
     if (f == 0x80E1) {                                   /* GL_BGRA */
         if (ty == 0x8367) ty = 0x1401;                   /* UNSIGNED_INT_8_8_8_8_REV -> UNSIGNED_BYTE */
         if (i == 0x1908 || i == 0x8058) i = 0x80E1;      /* internal = BGRA_EXT (ES requires format == internal) */

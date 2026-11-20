@@ -6,9 +6,85 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#ifndef GL_ARRAY_ELEMENT_LOCK_FIRST_EXT
+#define GL_ARRAY_ELEMENT_LOCK_FIRST_EXT 0x81A8
+#define GL_ARRAY_ELEMENT_LOCK_COUNT_EXT 0x81A9
+#endif
 
 typedef void (APIENTRY *array_element_fn)(GLint);
 typedef void (APIENTRY *texture_unit_fn)(GLenum);
+typedef void (APIENTRY *lock_arrays_fn)(GLint, GLsizei);
+typedef void (APIENTRY *unlock_arrays_fn)(void);
+
+static int has_extension(const char *extensions, const char *name)
+{
+    size_t len = strlen(name);
+    const char *found = extensions;
+    while (found && (found = strstr(found, name))) {
+        if ((found == extensions || found[-1] == ' ') &&
+            (found[len] == '\0' || found[len] == ' ')) return 1;
+        found += len;
+    }
+    return 0;
+}
+
+static int clear_errors(const char *label)
+{
+    GLenum err = glGetError();
+    if (err == GL_NO_ERROR) return 1;
+    printf("FAIL %s inherited glError=0x%x\n", label, err);
+    while (glGetError() != GL_NO_ERROR) {}
+    return 0;
+}
+
+static int expect_error(const char *label, GLenum expected)
+{
+    GLenum got = glGetError(), extra = glGetError();
+    int ok = got == expected && extra == GL_NO_ERROR;
+    printf("%s %s glError=0x%x expected=0x%x extra=0x%x\n",
+           ok ? "PASS" : "FAIL", label, got, expected, extra);
+    return ok;
+}
+
+static int call_lock(lock_arrays_fn lock_arrays, GLint first, GLsizei count,
+                     const char *label, GLenum expected)
+{
+    int clean = clear_errors(label);
+    lock_arrays(first, count);
+    return expect_error(label, expected) && clean;
+}
+
+static int call_unlock(unlock_arrays_fn unlock_arrays, const char *label,
+                       GLenum expected)
+{
+    int clean = clear_errors(label);
+    unlock_arrays();
+    return expect_error(label, expected) && clean;
+}
+
+static int check_lock_range(const char *label, GLint expected_first,
+                            GLint expected_count)
+{
+    GLint first = -1, count = -1;
+    int clean = clear_errors(label);
+    glGetIntegerv(GL_ARRAY_ELEMENT_LOCK_FIRST_EXT, &first);
+    glGetIntegerv(GL_ARRAY_ELEMENT_LOCK_COUNT_EXT, &count);
+    GLboolean b = GL_FALSE;
+    GLfloat f = -1;
+    GLdouble d = -1;
+    glGetBooleanv(GL_ARRAY_ELEMENT_LOCK_COUNT_EXT, &b);
+    glGetFloatv(GL_ARRAY_ELEMENT_LOCK_FIRST_EXT, &f);
+    glGetDoublev(GL_ARRAY_ELEMENT_LOCK_COUNT_EXT, &d);
+    GLenum err = glGetError(), extra = glGetError();
+    int ok = clean && err == GL_NO_ERROR && extra == GL_NO_ERROR &&
+             first == expected_first && count == expected_count &&
+             b == (expected_count != 0) && f == expected_first && d == expected_count;
+    printf("%s %s first=%d count=%d bool=%u float=%g double=%g glError=0x%x extra=0x%x\n",
+           ok ? "PASS" : "FAIL", label, first, count, (unsigned)b, (double)f, d, err, extra);
+    return ok;
+}
 
 static int check_pixels(const char *label)
 {
@@ -37,12 +113,28 @@ int main(void)
 
     void *lib = dlopen(path, RTLD_NOW);
     if (!lib) { fprintf(stderr, "libGL: %s\n", dlerror()); return 2; }
-    array_element_fn element = (array_element_fn)SDL_GL_GetProcAddress("glArrayElement");
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
     printf("video=%s library=%s renderer=%s version=%s\n", SDL_GetCurrentVideoDriver(),
            path, glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    printf("GL_EXTENSIONS=%s\n", extensions ? extensions : "(null)");
+    if (!extensions) {
+        fputs("GL_EXTENSIONS query failed with a current context\n", stderr);
+        return 2;
+    }
+    array_element_fn element = (array_element_fn)SDL_GL_GetProcAddress("glArrayElement");
+    int cva_gl = has_extension(extensions, "GL_EXT_compiled_vertex_array");
+    int cva_sdl = SDL_GL_ExtensionSupported("GL_EXT_compiled_vertex_array") == SDL_TRUE;
+    lock_arrays_fn lock_arrays =
+        (lock_arrays_fn)SDL_GL_GetProcAddress("glLockArraysEXT");
+    unlock_arrays_fn unlock_arrays =
+        (unlock_arrays_fn)SDL_GL_GetProcAddress("glUnlockArraysEXT");
     printf("glArrayElement: SDL=%s GLX_ARB=%s ELF=%s\n", element ? "yes" : "no",
            glXGetProcAddressARB((const GLubyte *)"glArrayElement") ? "yes" : "no",
            dlsym(lib, "glArrayElement") ? "yes" : "no");
+    printf("GL_EXT_compiled_vertex_array: GL=%s SDL=%s\n",
+           cva_gl ? "yes" : "no", cva_sdl ? "yes" : "no");
+    printf("glLockArraysEXT: SDL=%s\n", lock_arrays ? "yes" : "no");
+    printf("glUnlockArraysEXT: SDL=%s\n", unlock_arrays ? "yes" : "no");
 
     /* Deliberately skip vertex 0. Its position and color must not be drawn. */
     static const struct vertex { GLfloat xy[2]; GLubyte rgba[4]; } verts[] = {
@@ -58,8 +150,82 @@ int main(void)
     glClearColor(0, 0, 1, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawElements(GL_TRIANGLE_STRIP, 3, GL_UNSIGNED_BYTE, indices);
+    int control_ok = check_pixels("glDrawElements control");
+    int cva_rc = 0;
+    if (cva_gl != cva_sdl) {
+        puts("FAIL GL_EXT_compiled_vertex_array app discovery mismatch between GL and SDL");
+        cva_rc = 1;
+    }
+    if (!cva_gl) {
+        puts("SKIP GL_EXT_compiled_vertex_array: not advertised by GL");
+    } else if (!lock_arrays || !unlock_arrays) {
+        puts("FAIL GL_EXT_compiled_vertex_array advertised but SDL proc lookup is incomplete");
+        cva_rc = 1;
+    } else {
+        cva_rc |= !check_lock_range("CVA initial range", 0, 0);
+
+        cva_rc |= !call_lock(lock_arrays, 1, 3, "CVA valid lock", GL_NO_ERROR);
+        cva_rc |= !check_lock_range("CVA locked range", 1, 3);
+        /* An unshared context on the same thread must not inherit this lock. */
+        SDL_GLContext other = SDL_GL_CreateContext(win);
+        if (!other || SDL_GL_MakeCurrent(win, other)) {
+            fprintf(stderr, "CVA context switch: %s\n", SDL_GetError()); return 2;
+        }
+        cva_rc |= !check_lock_range("CVA independent context", 0, 0);
+        if (SDL_GL_MakeCurrent(win, ctx)) {
+            fprintf(stderr, "CVA restore context: %s\n", SDL_GetError()); return 2;
+        }
+        SDL_GL_DeleteContext(other);
+        cva_rc |= !check_lock_range("CVA restored context", 1, 3);
+        cva_rc |= !clear_errors("CVA locked draw");
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawElements(GL_TRIANGLE_STRIP, 3, GL_UNSIGNED_BYTE, indices);
+        cva_rc |= !check_pixels("CVA locked draw");
+        cva_rc |= !call_unlock(unlock_arrays, "CVA valid unlock", GL_NO_ERROR);
+
+        cva_rc |= !call_lock(lock_arrays, -1, 3, "CVA negative first", GL_INVALID_VALUE);
+        cva_rc |= !call_lock(lock_arrays, 1, 0, "CVA zero count", GL_INVALID_VALUE);
+        cva_rc |= !call_lock(lock_arrays, 1, -1, "CVA negative count", GL_INVALID_VALUE);
+        cva_rc |= !call_unlock(unlock_arrays, "CVA unmatched unlock", GL_INVALID_OPERATION);
+
+        cva_rc |= !call_lock(lock_arrays, 1, 3, "CVA nested setup", GL_NO_ERROR);
+        cva_rc |= !call_lock(lock_arrays, 0, 1, "CVA nested lock", GL_INVALID_OPERATION);
+        cva_rc |= !check_lock_range("CVA range after nested lock", 1, 3);
+        cva_rc |= !call_unlock(unlock_arrays, "CVA nested cleanup", GL_NO_ERROR);
+
+        cva_rc |= !clear_errors("CVA lock in begin/end");
+        glBegin(GL_POINTS);
+        lock_arrays(1, 3);
+        glEnd();
+        cva_rc |= !expect_error("CVA lock in begin/end", GL_INVALID_OPERATION);
+        cva_rc |= !call_lock(lock_arrays, 1, 3, "CVA unlock in begin/end setup",
+                             GL_NO_ERROR);
+        cva_rc |= !clear_errors("CVA unlock in begin/end");
+        glBegin(GL_POINTS);
+        unlock_arrays();
+        glEnd();
+        cva_rc |= !expect_error("CVA unlock in begin/end", GL_INVALID_OPERATION);
+        cva_rc |= !check_lock_range("CVA range after begin/end unlock", 1, 3);
+        cva_rc |= !call_unlock(unlock_arrays, "CVA begin/end cleanup", GL_NO_ERROR);
+
+        /* Both operations execute during list compilation and are not replayed. */
+        GLuint list = glGenLists(2);
+        if (!list) { fputs("CVA display-list allocation failed\n", stderr); return 2; }
+        glNewList(list, GL_COMPILE);
+        lock_arrays(1, 3);
+        glEndList();
+        cva_rc |= !check_lock_range("CVA lock during list compile", 1, 3);
+        glNewList(list + 1, GL_COMPILE);
+        unlock_arrays();
+        glEndList();
+        glCallList(list);
+        cva_rc |= !call_lock(lock_arrays, 1, 3, "CVA lock not replayed", GL_NO_ERROR);
+        glCallList(list + 1);
+        cva_rc |= !call_unlock(unlock_arrays, "CVA unlock not replayed", GL_NO_ERROR);
+        glDeleteLists(list, 2);
+    }
     int rc = 2;
-    if (check_pixels("glDrawElements control")) {
+    if (control_ok) {
         rc = 1;
         if (!element) puts("FAIL SDL lookup; glArrayElement draw not run");
         else {
@@ -171,6 +337,7 @@ int main(void)
         if (selected != GL_TEXTURE1) { puts("FAIL client texture unit changed"); rc = 1; }
         glDeleteTextures(2, textures);
     } else if (rc == 0) puts("SKIP multitexture: no second texture unit");
+    if (rc != 2) rc |= cva_rc;
     dlclose(lib);
     SDL_GL_DeleteContext(ctx);
     SDL_DestroyWindow(win);

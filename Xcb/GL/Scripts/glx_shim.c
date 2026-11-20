@@ -51,7 +51,10 @@
 #define glScalef                   glx_ovr_glScalef
 #define glRotatef                  glx_ovr_glRotatef
 #define glMultMatrixf              glx_ovr_glMultMatrixf
+#define glGetBooleanv              glx_ovr_glGetBooleanv
+#define glGetFloatv                glx_ovr_glGetFloatv
 #define glGetIntegerv              glx_ovr_glGetIntegerv
+#define glGetError                 glx_ovr_glGetError
 #define glGetStringi               glx_ovr_glGetStringi
 #define glGetString                glx_ovr_glGetString
 #define glShaderSource             glx_ovr_glShaderSource
@@ -126,7 +129,10 @@
 #undef glShaderSource
 #undef glGetString
 #undef glGetStringi
+#undef glGetError
 #undef glGetIntegerv
+#undef glGetFloatv
+#undef glGetBooleanv
 #undef glMultMatrixf
 #undef glRotatef
 #undef glScalef
@@ -188,7 +194,8 @@ extern int      eglGetError(void);
 
 typedef unsigned long glx_xid;
 typedef struct { void* ectx; void* cfg; int ver; int want4; int want_ver; int es_native;
-                 int profile_mask; int flags; int from_egl; } glx_ctx;
+                 int profile_mask; int flags; int from_egl;
+                 int cva_first, cva_count; unsigned cva_errors; } glx_ctx;
 typedef struct { void* visual; unsigned long visualid; int screen, depth, cls;
                  unsigned long red_mask, green_mask, blue_mask;
                  int colormap_size, bits_per_rgb; } glx_xvi;      /* = XVisualInfo */

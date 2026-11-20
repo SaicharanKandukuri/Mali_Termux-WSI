@@ -147,6 +147,7 @@ static const char* const emu_arb3[] = {
 static const char emu_arb1[] =
     " GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_env_combine"
     " GL_ARB_texture_non_power_of_two GL_ARB_point_sprite GL_EXT_framebuffer_object"
+    " GL_EXT_compiled_vertex_array"
     " GL_SGIS_generate_mipmap GL_ARB_texture_compression GL_EXT_texture_compression_s3tc"
     " GL_EXT_texture_compression_dxt1"
     " GL_ATI_meminfo";
@@ -710,6 +711,7 @@ GLC const unsigned char* glGetString(unsigned name) {
 /* ===== D) Integer Values Query ===== */
 GLC void glGetIntegerv(unsigned pname, int* v) {
     if (gl_trace_on()) printf("[trace] glGetIntegerv(0x%x)\n", pname);
+    if (cva_get(pname, v)) return;
     int ver = emu_ver();
   
     if (ver >= 1 && pname >= 0x87FB && pname <= 0x87FD) { ati_meminfo(v); return; }

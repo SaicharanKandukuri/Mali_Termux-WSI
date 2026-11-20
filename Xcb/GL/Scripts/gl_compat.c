@@ -91,6 +91,33 @@ static __thread struct {
     int rec_mode;                      /* 0x1300 GL_COMPILE, 0x1301 GL_COMPILE_AND_EXECUTE */
 } IM;
 
+enum {
+    CVA_LOCK_FIRST = 0x81A8,
+    CVA_LOCK_COUNT = 0x81A9,
+    CVA_INVALID_VALUE_BIT = 1,
+    CVA_INVALID_OPERATION_BIT = 2
+};
+
+static glx_ctx* cva_context(void) {
+    glx_ctx* c = T_glx.ctx;
+    return c && c->ver == 1 && !c->es_native ? c : NULL;
+}
+
+static void cva_set_error(unsigned error) {
+    glx_ctx* c = cva_context();
+    if (!c) return;
+    if (error == 0x0501) c->cva_errors |= CVA_INVALID_VALUE_BIT;
+    else if (error == 0x0502) c->cva_errors |= CVA_INVALID_OPERATION_BIT;
+}
+
+static int cva_get(unsigned pname, int* value) {
+    glx_ctx* c = cva_context();
+    if (!c || (pname != CVA_LOCK_FIRST && pname != CVA_LOCK_COUNT)) return 0;
+    if (IM.in_begin) { cva_set_error(0x0502); return 1; }
+    *value = pname == CVA_LOCK_FIRST ? c->cva_first : c->cva_count;
+    return 1;
+}
+
 /* raster position (window coordinates) + zoom, per thread/context */
 static __thread float g_rasterx, g_rastery, g_zoomx = 1.0f, g_zoomy = 1.0f;
 static __thread int   g_rvalid = 1;
@@ -522,6 +549,56 @@ GLC void glEnd(void) {
         if (REC_SKIP()) return;
     }
     im_draw(IM.mode, n, IM.pos, nr, co, te, IM.used_elements);
+}
+
+/* EXT_compiled_vertex_array is a stateful hint; no copy or cache is required. */
+GLC void glLockArraysEXT(int first, int count) {
+    glx_ctx* c = cva_context();
+    if (!c) return;
+    if (IM.in_begin) { cva_set_error(0x0502); return; }
+    if (first < 0 || count <= 0) { cva_set_error(0x0501); return; }
+    if (c->cva_count) { cva_set_error(0x0502); return; }
+    c->cva_first = first;
+    c->cva_count = count;
+}
+
+GLC void glUnlockArraysEXT(void) {
+    glx_ctx* c = cva_context();
+    if (!c) return;
+    if (IM.in_begin || !c->cva_count) { cva_set_error(0x0502); return; }
+    c->cva_first = 0;
+    c->cva_count = 0;
+}
+
+GLC unsigned glGetError(void) {
+    glx_ctx* c = cva_context();
+    if (c && (c->cva_errors & CVA_INVALID_VALUE_BIT)) {
+        c->cva_errors &= ~CVA_INVALID_VALUE_BIT;
+        return 0x0501;
+    }
+    if (c && (c->cva_errors & CVA_INVALID_OPERATION_BIT)) {
+        c->cva_errors &= ~CVA_INVALID_OPERATION_BIT;
+        return 0x0502;
+    }
+    return RP(glGetError, unsigned (*)(void))();
+}
+
+GLC void glGetBooleanv(unsigned pname, unsigned char* out) {
+    int value;
+    if (cva_get(pname, &value)) {
+        if (!IM.in_begin) *out = value != 0;
+        return;
+    }
+    RP(glGetBooleanv, void (*)(unsigned, unsigned char*))(pname, out);
+}
+
+GLC void glGetFloatv(unsigned pname, float* out) {
+    int value;
+    if (cva_get(pname, &value)) {
+        if (!IM.in_begin) *out = (float)value;
+        return;
+    }
+    RP(glGetFloatv, F_getf)(pname, out);
 }
 
 GLC void glVertex2f(float x, float y)                { im_vertex(x, y, 0.0f); }
@@ -1213,6 +1290,11 @@ GLC void glClipPlane(unsigned plane, const double* e) {
 }
 GLC void glLightModeli(unsigned pname, int v) { RP(glLightModelf, F_uif)(pname, (float)v); }
 GLC void glGetDoublev(unsigned pname, double* out) {
+    int value;
+    if (cva_get(pname, &value)) {
+        if (!IM.in_begin) *out = (double)value;
+        return;
+    }
     if (pname == 0x8068) pname = 0x8069;                           /* GL_TEXTURE_BINDING_1D -> GL_TEXTURE_BINDING_2D */
     float f[16] = { 0 };
     int n = 1;

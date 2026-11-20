@@ -85,7 +85,26 @@ zen ./dinoshade
 The patch uses the screen size for the window and projection and the core
 polygon-offset entry instead of the unavailable EXT symbol. Use the driver's
 GLU/GLUT: Termux's packaged GLUT required an unexported `glPushClientAttrib`.
-The M31 displayed the floor and shadow but the dinosaur looked fragmented.
+The dinosaur's dark faces can look like gaps. At the same fixed camera and
+light angle, desktop OpenGL showed the same shading. With lighting, reflection
+and shadows off, the solid-color dinosaur covered exactly the same 5,000 pixels
+on both renderers in a 270×500 sample, with or without face culling.
+
+The confirmed M31 mismatch is the **floor**. In the default (non-mipmapped)
+run, the demo uploads RGB bytes with the desktop internal format `3`.
+Desktop GL accepted it; ZenFox on the M31 returned `GL_INVALID_VALUE` and
+the green rings were absent. To reproduce the app-side comparison after
+building the original above, change **only** that argument in a diagnostic copy:
+
+```sh
+cd "$D/dino"
+sed 's/glTexImage2D(GL_TEXTURE_2D, 0, 3, 16, 16/glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 16, 16/' dinoshade.c > dinoshade-rgb.c
+clang -Wno-incompatible-function-pointer-types dinoshade-rgb.c -L"$W/build" -lglut -lGLU -lGL -lm -o dinoshade-rgb
+zen ./dinoshade-rgb
+```
+
+The same upload then returned no error and the rings reappeared. This is a
+workaround for the demo, not a fix for desktop numeric internal formats.
 
 ## QuakeSpasm (Quake shareware)
 

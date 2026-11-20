@@ -298,6 +298,15 @@ int main(void)
        the lightmap. Only the pair (left, right) produces green. */
     texture_unit_fn active = (texture_unit_fn)SDL_GL_GetProcAddress("glActiveTexture");
     texture_unit_fn client = (texture_unit_fn)SDL_GL_GetProcAddress("glClientActiveTexture");
+    typedef void (APIENTRY *coord2f_fn)(GLenum, GLfloat, GLfloat);
+    texture_unit_fn active_arb = (texture_unit_fn)SDL_GL_GetProcAddress("glActiveTextureARB");
+    texture_unit_fn client_arb = (texture_unit_fn)SDL_GL_GetProcAddress("glClientActiveTextureARB");
+    coord2f_fn coord_arb = (coord2f_fn)SDL_GL_GetProcAddress("glMultiTexCoord2fARB");
+    int arb = SDL_GL_ExtensionSupported("GL_ARB_multitexture");
+    if (arb && (!active_arb || !client_arb || !coord_arb)) {
+        puts("FAIL GL_ARB_multitexture advertised but OpenArena entry points missing");
+        rc = 1;
+    }
     GLint units = 0;
     if (active && client) glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
     if (rc == 0 && units >= 2) {
@@ -335,6 +344,22 @@ int main(void)
         GLint selected = 0;
         glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &selected);
         if (selected != GL_TEXTURE1) { puts("FAIL client texture unit changed"); rc = 1; }
+        if (arb) {
+            /* Replace the two coordinate arrays with different per-unit constants. */
+            for (int i = 0; i < 2; i++) {
+                active_arb(GL_TEXTURE0 + i);
+                glGetIntegerv(GL_ACTIVE_TEXTURE, &selected);
+                if (selected != (GLint)(GL_TEXTURE0 + i)) { puts("FAIL ARB active unit"); rc = 1; }
+                client_arb(GL_TEXTURE0 + i);
+                glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &selected);
+                if (selected != (GLint)(GL_TEXTURE0 + i)) { puts("FAIL ARB client unit"); rc = 1; }
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+                coord_arb(GL_TEXTURE0 + i, i ? .75f : .25f, 0);
+            }
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawElements(GL_TRIANGLE_STRIP, 3, GL_UNSIGNED_BYTE, indices);
+            rc |= !check_pixels("OpenArena ARB multitexture draw");
+        }
         glDeleteTextures(2, textures);
     } else if (rc == 0) puts("SKIP multitexture: no second texture unit");
     if (rc != 2) rc |= cva_rc;

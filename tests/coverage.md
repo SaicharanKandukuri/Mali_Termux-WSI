@@ -30,6 +30,7 @@ incorrect behavior is a failure. This table is not a list of all advertised exte
 | --- | --- | --- |
 | [EXT_compiled_vertex_array](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_compiled_vertex_array.txt) | On desktop GL over GLES1, GL and SDL advertise it and SDL resolves both functions. The locked draw, per-context range, four query types, error cases and display-list checks pass. No vertex cache or extra geometry copy is used. | Unmodified OpenArena now selects indexed triangles on Auto. |
 | EXT_framebuffer_object | Advertised; only the desktop mipmap-generation entry is verified by the [Quake water regression](quake-water.md), not the whole extension. | QuakeSpasm's default water samples textured mip levels after the fix. |
+| [ARB_multitexture](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_multitexture.txt) | SDL resolves OpenArena's three ARB names through GLX. The array probe selects both texture units and draws distinct texture coordinates through those names. Other coordinate variants are not behavior-tested here. | OpenArena can combine a surface texture and its lightmap in a single pass. |
 
 Use [Mesa llvmpipe as a reference](demos.md#openarena-088-ioquake3-desktop-gl-11) for the lock and error checks.
 
@@ -42,6 +43,11 @@ With the extension, stock settings (`r_primitives 0`, `r_ext_compiled_vertex_arr
 log `compiled vertex arrays: enabled` and `rendering primitives: single glDrawElements`.
 
 **Mali-G72, 1080×1997 fullscreen:** 51–52 FPS on Auto with indexed triangles; about 8 FPS on the strip path used by the old Auto setting (same 296-frame replay, swap interval 0, sound off).
+
+With indexed triangles in both cases, the same replay measured **55.6–56.1 FPS
+with multitexturing**, versus **52.8–53.6 FPS without**. To compare, leave
+`r_primitives 0` and launch with `+set r_ext_multitexture 1` or `0`.
+Check the renderer log for `multitexture: enabled` or `disabled`.
 
 To repeat: [build, launch fullscreen and record a match](demos.md#openarena-088-ioquake3-desktop-gl-11).
 From the **main menu** (disconnect from the live match first), run these in the game console:

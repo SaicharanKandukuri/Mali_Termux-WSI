@@ -919,6 +919,7 @@ GLX_EXPORT const char* glXQueryCurrentRendererStringMESA(int attr);
 /* ---------- glXGetProcAddress ---------- */
 GLX_EXPORT void* glXGetProcAddress(const unsigned char* name);
 #define GPA(n) { #n, (void*)n }
+#define GPA_ARB(n) { "gl" #n "ARB", (void*)gl##n }
 /* Symbol from our own libGL (wrappers + trampolines), not directly from Mali */
 static void* glx_self_sym(const char* n) {
     static void* h;
@@ -948,6 +949,25 @@ static void* glx_gpa(const char* name) {
         GPA(glXQueryRendererIntegerMESA), GPA(glXQueryCurrentRendererIntegerMESA),
         GPA(glXQueryRendererStringMESA), GPA(glXQueryCurrentRendererStringMESA),
     };
+    static const struct { const char* n; void* f; } arb_aliases[] = {
+        GPA_ARB(ActiveTexture), GPA_ARB(ClientActiveTexture),
+        GPA_ARB(MultiTexCoord1d), GPA_ARB(MultiTexCoord2d),
+        GPA_ARB(MultiTexCoord3d), GPA_ARB(MultiTexCoord4d),
+        GPA_ARB(MultiTexCoord1dv), GPA_ARB(MultiTexCoord2dv),
+        GPA_ARB(MultiTexCoord3dv), GPA_ARB(MultiTexCoord4dv),
+        GPA_ARB(MultiTexCoord1f), GPA_ARB(MultiTexCoord2f),
+        GPA_ARB(MultiTexCoord3f), GPA_ARB(MultiTexCoord4f),
+        GPA_ARB(MultiTexCoord1fv), GPA_ARB(MultiTexCoord2fv),
+        GPA_ARB(MultiTexCoord3fv), GPA_ARB(MultiTexCoord4fv),
+        GPA_ARB(MultiTexCoord1i), GPA_ARB(MultiTexCoord2i),
+        GPA_ARB(MultiTexCoord3i), GPA_ARB(MultiTexCoord4i),
+        GPA_ARB(MultiTexCoord1iv), GPA_ARB(MultiTexCoord2iv),
+        GPA_ARB(MultiTexCoord3iv), GPA_ARB(MultiTexCoord4iv),
+        GPA_ARB(MultiTexCoord1s), GPA_ARB(MultiTexCoord2s),
+        GPA_ARB(MultiTexCoord3s), GPA_ARB(MultiTexCoord4s),
+        GPA_ARB(MultiTexCoord1sv), GPA_ARB(MultiTexCoord2sv),
+        GPA_ARB(MultiTexCoord3sv), GPA_ARB(MultiTexCoord4sv),
+    };
     if (!name) return NULL;
     if (name[0] == 'g' && name[1] == 'l' && name[2] == 'X') {
         if (!strcmp(name, "glXGetProcAddress") || !strcmp(name, "glXGetProcAddressARB"))
@@ -958,6 +978,8 @@ static void* glx_gpa(const char* name) {
             fprintf(stderr, "[glx] GetProcAddress('%s') -> NULL\n", name);
         return NULL;
     }
+    for (unsigned i = 0; i < sizeof arb_aliases / sizeof arb_aliases[0]; i++)
+        if (!strcmp(name, arb_aliases[i].n)) return arb_aliases[i].f;
     { void* me = glx_self_sym(name); if (me) return me; }
     void* r = eglGetProcAddress(name);
     return r;

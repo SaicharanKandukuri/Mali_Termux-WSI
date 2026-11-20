@@ -32,8 +32,6 @@ ARM Mali GPU, **without root** and **without Mesa/Zink**.
 
 ## Contents
 
-## Contents
-
 - [Overview](#overview)
 - [Building](#building)
 - [Vulkan](#vulkan)

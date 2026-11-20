@@ -184,5 +184,43 @@ record zen-oa
 After a few seconds, use `stoprecord`, then `demo zen-oa` to replay the match.
 The recording is in `$D/oa/profile/baseoa/demos/`.
 
+### Log FPS and run the same replay unattended
+
+For a live FPS counter enter `cg_drawFPS 1` in the OpenArena console. For
+comparable numbers, use the saved replay instead of watching the counter.
+From the Termux shell, after the build and recording above:
+
+```sh
+(
+  set -eu
+  cd "$D/oa/ioq3/build/release-linux-arm64"
+  profile="$D/oa/profile"
+  test -s "$profile/baseoa/demos/zen-oa.dm_71"
+  logs=$(mktemp -d "$D/oa/bench.XXXXXX")
+  echo "Logs: $logs"
+  for run in warmup 1 2 3; do
+    zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" \
+      timeout 90 ./ioquake3.arm64 +set com_basegame baseoa \
+      +set fs_basepath "$D/oa/openarena-0.8.8" +set fs_homepath "$profile" \
+      +set cl_renderer opengl1 +set r_mode -2 +set r_fullscreen 1 \
+      +set r_ignorehwgamma 1 +set s_initsound 0 +set net_enabled 0 \
+      +set timedemo 1 +set cl_timedemoLog "timed-$run.log" \
+      +set nextdemo quit +demo zen-oa >"$logs/$run.log" 2>&1
+    grep -E '^GL_RENDERER:|^MODE:|^[0-9]+ frames .* fps' "$logs/$run.log" | tail -3
+    grep -Eq '^[0-9]+ frames .* fps' "$logs/$run.log"
+    cp "$profile/baseoa/timed-$run.log" "$logs/"
+  done
+)
+```
+
+Discard the warm-up. Compare runs with the same frame count, renderer,
+fullscreen dimensions, and sound setting. `timedemo 1` measures how fast
+the engine produces frames; it does not count Android scanouts. For A/B
+tests, alternate A/B/B/A on the same recording and keep both sets of logs.
+
 If the HUD appears but the room is white, check the named RGB upload in
 the baseline: the driver must accept RGBA source bytes for `GL_RGB` storage.
+
+## Serious Sam Classic: The First Encounter
+
+See [build the free demo, launch Karnak fullscreen, and profile a replay](serious-sam-tfe.md).

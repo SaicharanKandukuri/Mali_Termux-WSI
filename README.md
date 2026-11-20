@@ -48,30 +48,30 @@ Mostly those people was on Discord
 
 | Library | Path | Output | Summary |
 |---|---|---|---|
-| Vulkan | `Xcb/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
-| OpenGL | `Xcb/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.3 emulated on GLES |
-| GLFW | `Xcb/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
-| GLU | `Xcb/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
-| GLUT | `Xcb/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
-| GBM | `Xcb/EGL/GBM` | `libgbm.so.1` | GBM over AHardwareBuffer |
-| DRM | `Xcb/drm` | `libdrm.so.2` | Kernel-less DRM/KMS emulation |
-| VA-API | `Xcb/dri` | `ahb_drv_video.so` | Video decode via AMediaCodec |
-| GLES | `Xcb/GLES` | `libGLESv2.so.2` | GLES 1.x/2.0/3.x over the Mali blob, zero-copy AHB + DRI3 |
-| EGL | `Xcb/EGL` | `libEGL.so.1` | EGL over the Mali blob: X11, XCB, GBM, surfaceless; zero-copy AHB + DRI3 |
+| Vulkan | `API/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
+| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.3 emulated on GLES |
+| GLFW | `API/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
+| GLU | `API/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
+| GLUT | `API/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
+| GBM | `API/EGL/GBM` | `libgbm.so.1` | GBM over AHardwareBuffer |
+| DRM | `API/drm` | `libdrm.so.2` | Kernel-less DRM/KMS emulation |
+| VA-API | `API/dri` | `ahb_drv_video.so` | Video decode via AMediaCodec |
+| GLES | `API/GLES` | `libGLESv2.so.2` | GLES 1.x/2.0/3.x over the Mali blob, zero-copy AHB + DRI3 |
+| EGL | `API/EGL` | `libEGL.so.1` | EGL over the Mali blob: X11, XCB, GBM, surfaceless; zero-copy AHB + DRI3 |
 
 
 Repository layout:
 
-    Xcb/Vulkan/        Vulkan loader, WSI, and shims
-    Xcb/GL/            Desktop OpenGL, GLX, and EGL shims
-    Xcb/GLES/          GLES 1.x/2.x/3.x shim (zero-copy WSI)
-    Xcb/EGL/           EGL shim (X11/XCB/GBM platforms)
-    Xcb/GL/GLFW/       Custom GLFW 3.6 implementation
-    Xcb/GL/GLU/        Custom GLU 1.3 implementation
-    Xcb/GL/GLUT/       Custom GLUT implementation
-    Xcb/EGL/GBM/       GBM over AHardwareBuffer
-    Xcb/drm/           Kernel-less DRM/KMS emulation
-    Xcb/dri/           VA-API driver (MediaCodec backend)
+    API/Vulkan/        Vulkan loader, WSI, and shims
+    API/GL/            Desktop OpenGL, GLX, and EGL shims
+    API/GLES/          GLES 1.x/2.x/3.x shim (zero-copy WSI)
+    API/EGL/           EGL shim (X11/API/GBM platforms)
+    API/GL/GLFW/       Custom GLFW 3.6 implementation
+    API/GL/GLU/        Custom GLU 1.3 implementation
+    API/GL/GLUT/       Custom GLUT implementation
+    API/EGL/GBM/       GBM over AHardwareBuffer
+    API/drm/           Kernel-less DRM/KMS emulation
+    API/dri/           VA-API driver (MediaCodec backend)
     src/               Bundled third-party code (libtess2, GLFW headers, bcdec)
     makefile           Build orchestration
 
@@ -89,7 +89,7 @@ Each library section below lists its own dependencies and options.
 
 ## Vulkan
 
-Path: `Xcb/Vulkan`
+Path: `API/Vulkan`
 
 A drop-in replacement for `libvulkan.so.1`. It loads the Mali driver through
 the Android HAL (SPHAL) and adds an XCB WSI layer on top (swapchain,
@@ -207,10 +207,10 @@ driver as the last link.
 
 ## OpenGL
 
-Path: `Xcb/GL`
+Path: `API/GL`
 
 A `libGL.so.1` that provides GLX 1.4 on top of the EGL shim and emulates
-desktop OpenGL (1.x up to 4.3 core/compat) over the GLES that Mali offers.
+desktop OpenGL (1.x up to 4.4 core/compat) over the GLES that Mali offers.
 It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
 ### Layout
@@ -240,7 +240,7 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
     pkg install clang make libxcb libx11 libglvnd
 
-Also needs `src/bcdec` (bundled, CPU decoder), `Xcb/GLES/Include/gles_list.h`
+Also needs `src/bcdec` (bundled, CPU decoder), `API/GLES/Include/gles_list.h`
 and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 (`clang++`) and `libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
 
@@ -257,13 +257,13 @@ and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 | Source (in priority order) | Result |
 |---|---|
 | `GLX_ES=1\|2\|3` | forced |
-| `GLX_GL` (e.g. `21`, `33`, `44`) | `<20` → ES1, `>=30` → ES3 |
+| `GLX_GL` (e.g. `21`, `33`, `45`) | `<20` → ES1, `>=30` → ES3 |
 | `glXCreateContextAttribsARB` | ES profile, or major 1 → ES1, major ≥3 → ES3 |
 | Imported symbols of the app | fixed-function only → ES1, shaders → ES2/3 |
 | Fallback | ES2 (`GLX_DEFAULT_ES=3` for ES3) |
 
 Fixed-function applications run on ES1; shader applications on ES3, with
-the reported version up to GL 4.4.
+the reported version up to GL 4.5.
 
 ### Environment variables
 
@@ -330,7 +330,7 @@ the reported version up to GL 4.4.
 
 ## GLFW
 
-Path: `Xcb/GL/GLFW`
+Path: `API/GL/GLFW`
 
 A custom GLFW 3.6 implementation for Termux:X11 on Mali GPUs. It uses pure
 xcb (no Xlib), xkbcommon for keyboard input and EGL for contexts.
@@ -386,7 +386,7 @@ constants this build needs, so the headers are bundled in `src/glfw`.
 
 ## GLU
 
-Path: `Xcb/GL/GLU`
+Path: `API/GL/GLU`
 
 A self-contained implementation of GLU 1.3 for Termux. It has no X11 or
 Mali-specific code and only needs an OpenGL library underneath.
@@ -436,7 +436,7 @@ Mali-specific code and only needs an OpenGL library underneath.
 
 ## GLUT
 
-Path: `Xcb/GL/GLUT`
+Path: `API/GL/GLUT`
 
 A small GLUT implementation ("mglut") on top of Xlib and GLX. It runs on
 any X server (Termux:X11) with a GLX-capable `libGL`.
@@ -482,8 +482,11 @@ any X server (Termux:X11) with a GLX-capable `libGL`.
 
 ## Roadmap
 
-- Separate backends for Wayland and Win32.
-- Refinement of the Desktop GL shim (fixing edge cases in complex GLSL shaders and depth buffer precision).
+- Adding supports display for Wayland and Win32.
+- adding OpenGL 4.6
+- fixing issues on blender crashing without clue
+- adding translate GLSL with GLSL ES
+- and much more!
 
 ## Notes from Arm engineers
 
@@ -557,7 +560,7 @@ signaled.
 
 ## GBM
 
-Path: `Xcb/EGL/GBM`
+Path: `API/EGL/GBM`
 
 A `libgbm.so.1` replacement that allocates buffers as Android
 `AHardwareBuffer`s instead of using Mesa. It lets EGL/X11 code that expects
@@ -616,7 +619,7 @@ GBM run on the Mali blob.
 
 ## GLES
 
-Path: `Xcb/GLES`
+Path: `API/GLES`
 
 A GLES 1.x / 2.0 / 3.x shim over the Mali blob. All GLES entry points are
 forwarded to the vendor driver; on top of that, a direct WSI presents the
@@ -626,7 +629,7 @@ frames through DRI3/Present with no CPU copy.
 
 - `Scripts/libGLESv2_shim.c` – trampolines, WSI, swap logic
 - `Include/gles_list.h` – list of forwarded GLES functions
-- `Xcb/EGL/Include/mali_sphal.h` – Mali driver loader (shared with EGL)
+- `API/EGL/Include/mali_sphal.h` – Mali driver loader (shared with EGL)
 
 ### Dependencies
 
@@ -692,7 +695,7 @@ and `libGLESv1_CM.so` are symlinks to it.
 
 ## EGL
 
-Path: `Xcb/EGL`
+Path: `API/EGL`
 
 A `libEGL.so.1` that wraps the Mali blob and adds X11 window surfaces.
 Applications can create windows with Xlib or xcb, or render through GBM,
@@ -787,7 +790,7 @@ without an EGL X11 platform in the driver.
 
 ## DRM
 
-Path: `Xcb/drm`
+Path: `API/drm`
 
 A kernel-less `libdrm.so.2`. Buffers are backed by `AHardwareBuffer`, and
 the KMS side (one CRTC, one connector, one plane) is emulated in
@@ -853,7 +856,7 @@ devices.
 
 ## VA-API driver
 
-Path: `Xcb/dri`
+Path: `API/dri`
 
 A VA-API driver (`ahb_drv_video.so`) that decodes video with Android's
 `AMediaCodec` and stores frames in `AHardwareBuffer` surfaces. It lets

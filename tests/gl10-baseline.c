@@ -30,6 +30,28 @@ static int sample(const char *label, int x, int y, int r, int g, int b)
     return ok;
 }
 
+static void triangle_z(GLfloat z)
+{
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-0.75f, -0.75f, z);
+    glVertex3f( 0.75f, -0.75f, z);
+    glVertex3f( 0.0f,   0.75f, z);
+    glEnd();
+}
+
+static int context_state(const char *label, int blend, int red, int blue)
+{
+    GLfloat color[4] = {-1, -1, -1, -1};
+    glGetFloatv(GL_CURRENT_COLOR, color);
+    int enabled = glIsEnabled(GL_BLEND);
+    int ok = errors(label) && enabled == blend && color[0] == red &&
+             color[1] == 1 && color[2] == blue && color[3] == 1;
+    printf("%s %s blend=%d rgba=%g,%g,%g,%g expected=%d/%d,1,%d,1\n",
+           ok ? "PASS" : "FAIL", label, enabled, color[0], color[1], color[2],
+           color[3], blend, red, blue);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     int show = argc == 2 && strcmp(argv[1], "--show") == 0;
@@ -42,12 +64,12 @@ int main(int argc, char **argv)
         fputs("SETUP FAIL: cannot open DISPLAY\n", stderr);
         return 2;
     }
-    int attrs[] = {GLX_RGBA, GLX_DOUBLEBUFFER, GLX_RED_SIZE, 1,
-                   GLX_GREEN_SIZE, 1, GLX_BLUE_SIZE, 1, None};
+    int attrs[] = {GLX_RGBA, GLX_DOUBLEBUFFER, GLX_RED_SIZE, 8,
+                   GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_DEPTH_SIZE, 16, None};
     XVisualInfo *vi = glXChooseVisual(d, DefaultScreen(d), attrs);
     int db = 0;
     if (!vi || glXGetConfig(d, vi, GLX_DOUBLEBUFFER, &db) != 0 || !db) {
-        fputs("SETUP FAIL: no double-buffered RGB visual\n", stderr);
+        fputs("SETUP FAIL: no double-buffered RGB8/depth16 visual\n", stderr);
         return 2;
     }
     Window root = RootWindow(d, vi->screen);
@@ -76,6 +98,16 @@ int main(int argc, char **argv)
            renderer ? (const char *)renderer : "(null)",
            version ? (const char *)version : "(null)");
     int ok = errors("identity") && vendor && renderer && version;
+    GLint depth = 0, red = 0, green = 0, blue = 0;
+    glGetIntegerv(GL_DEPTH_BITS, &depth);
+    glGetIntegerv(GL_RED_BITS, &red);
+    glGetIntegerv(GL_GREEN_BITS, &green);
+    glGetIntegerv(GL_BLUE_BITS, &blue);
+    printf("GL_DEPTH_BITS=%d GL_RGB_BITS=%d,%d,%d\n", depth, red, green, blue);
+    if (!errors("framebuffer bits") || depth < 16 || red < 8 || green < 8 || blue < 8) {
+        fputs("SETUP FAIL: bound framebuffer does not satisfy RGB8/depth16\n", stderr);
+        return 2;
+    }
     glViewport(0, 0, size, size);
     glClearColor(0, 0, 1, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -83,6 +115,51 @@ int main(int argc, char **argv)
     ok &= sample("clear-center", 64, 64, 0, 0, 255);
     ok &= sample("clear-corner", 8, 8, 0, 0, 255);
 
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glClearDepth(1);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glColor3f(1, 0, 0);
+    triangle_z(0);
+    ok &= errors("depth initial draw");
+    ok &= sample("depth-first-accepted", 64, 64, 255, 0, 0);
+    glColor3f(0, 1, 0);
+    triangle_z(0.5f);
+    ok &= errors("depth farther draw");
+    ok &= sample("depth-farther-rejected", 64, 64, 255, 0, 0);
+    triangle_z(-0.5f);
+    ok &= errors("depth nearer draw");
+    ok &= sample("depth-nearer-accepted", 64, 64, 0, 255, 0);
+    glDisable(GL_DEPTH_TEST);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_DITHER);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1, 0, 0, 0.5f);
+    triangle_z(0);
+    ok &= errors("blend draw");
+    /* RGB8 or better, dithering off: half red plus half blue, allowing rounding. */
+    ok &= sample("blend-half-red-over-blue", 64, 64, 128, 0, 128);
+    ok &= sample("blend-background", 8, 8, 0, 0, 255);
+
+    glColor4f(0, 1, 0, 1);
+    ok &= context_state("context-A-before", 1, 0, 0);
+    GLXContext other = glXCreateContext(d, vi, NULL, True);
+    if (!other || !glXMakeCurrent(d, win, other)) {
+        fputs("SETUP FAIL: cannot create or bind independent context B\n", stderr);
+        return 2;
+    }
+    ok &= context_state("context-B-default", 0, 1, 1);
+    if (!glXMakeCurrent(d, win, ctx)) {
+        fputs("SETUP FAIL: cannot rebind original context A\n", stderr);
+        return 2;
+    }
+    ok &= context_state("context-A-restored", 1, 0, 0);
+    glXDestroyContext(d, other);
+    glDisable(GL_BLEND);
+    glClearColor(0, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
     glColor3f(0, 1, 0);
     glBegin(GL_TRIANGLES);
     glVertex2f(-0.75f, -0.75f);

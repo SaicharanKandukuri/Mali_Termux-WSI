@@ -14,13 +14,19 @@ version, and GLX direct flag; the strings alone do not identify a library build.
 The test uses a legacy GLX context and only GL 1.0 rendering calls. A newer
 reported version is fine. This is not a conformance or performance test.
 
-| Stage (before any swap) | Center (64,64) | Corner (8,8) |
-| --- | --- | --- |
-| Clear | blue (0,0,255) | blue (0,0,255) |
-| Immediate-mode triangle | green (0,255,0) | blue (0,0,255) |
+Expected results come from the [desktop OpenGL 1.0 specification](https://registry.khronos.org/OpenGL/specs/gl/glspec10.pdf)
+(1 July 1994). All samples below are taken before swapping.
 
-Actual RGB values may differ by at most 4 per channel; alpha is not scored.
-Exit 0 means all checks passed; 1 means a pixel, GL error, or identity check
+| Check | Expected behavior | GL 1.0 reference |
+| --- | --- | --- |
+| Clear and draw | Both samples start blue. A green triangle changes the center but not the corner. | §§2.6–2.7, 4.2.3, 4.3.2 |
+| Depth, `GL_LESS` | Against cleared depth 1, window depth 0.5 passes (red); 0.75 fails (still red); 0.25 passes (green). | §4.1.5 |
+| Source-alpha blend | Half-alpha red over blue yields roughly half red and half blue, with no green. The corner stays blue. | §4.1.6 |
+| Switch unshared GLX contexts | A has blending enabled and green current color; fresh B has blending disabled and white current color. Switching back to A recovers its state. | §2.7 and chapter 6 state tables for defaults; GLX handles the switch |
+
+The bound drawable must have at least 8 bits per RGB channel and 16 bits of depth.
+The ±4 RGB readback tolerance is a smoke-test threshold, not a spec guarantee;
+alpha is not scored. Exit 0 means all checks passed; 1 means a state, pixel, GL error, or identity check
 failed; 2 indicates usage or an explicit setup failure. Xlib can also terminate
 on an X protocol error; retain stderr.
 
@@ -29,8 +35,15 @@ Check the triangle on the actual display or capture it separately. Pre-swap
 readback does not prove X11 presentation, and a returned swap does not prove
 visible pixels.
 
-On a Galaxy M31 (Android 13, Mali-G72), all four readbacks passed and the
-swapped triangle was visible in Termux:X11. Adding only the unversioned
+On a Galaxy M31 (Android 13, Mali-G72), the expanded checks passed with RGB8,
+24-bit depth, and blended RGB (127,0,127). The swapped triangle was visible
+in the original baseline run. Adding only the unversioned
 `libEGL.so` shim to the runtime directory made gralloc abort before the first
 readback; removing it restored the pass. Use `build` for linking and
 `build/gl-runtime` for running the test. No root is required.
+
+### Visual workloads
+
+- [Mesa glxgears](https://archive.mesa3d.org/demos/mesa-demos-8.4.0.tar.bz2): built from `src/xdemos/glxgears.c` and displayed on the M31 using the same runtime. Check for three separately colored, lit gears. Its frame count is not a display refresh measurement.
+- [Mark Kilgard’s dinoshade](https://www.opengl.org/archives/resources/code/samples/mjktips/TexShadowReflectLight.html): next scene for lighting, texture filtering, stencil reflections, and projected shadows. Needs GLU/GLUT; polygon offset uses GL 1.1 or an extension.
+- [GLQuake](https://github.com/id-Software/Quake/blob/master/WinQuake/docs/readme.glquake): game-level check with `timedemo demo1` and compatible game data. The original renderer uses texture objects, so this is a later compatibility test, not a strict GL 1.0 gate.

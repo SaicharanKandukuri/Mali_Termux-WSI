@@ -1,5 +1,8 @@
 # Desktop OpenGL 1.0 smoke test
 
+See [GL 1.x coverage](coverage.md) for the distinction between core behavior,
+optional extensions and the rendering path a game actually selects.
+
 From the repository root, build against desktop OpenGL and Xlib:
 
 ```sh
@@ -11,8 +14,9 @@ DISPLAY=:0 GLX_ES=1 LD_LIBRARY_PATH="$PWD/build/gl-runtime" ./gl10-baseline --sh
 Use the display and library search path for the implementation under test.
 Record the selected library path as well as the printed vendor, renderer,
 version, and GLX direct flag; the strings alone do not identify a library build.
-The test uses a legacy GLX context and only GL 1.0 rendering calls. A newer
-reported version is fine. This is not a conformance or performance test.
+The test uses a legacy GLX context. Most checks exercise GL 1.0; the named
+RGB internal format and `glTexSubImage2D` update additionally exercise GL 1.1.
+The complete binary is not a strict GL 1.0-only client or a conformance test.
 
 Expected results come from the [desktop OpenGL 1.0 specification](https://registry.khronos.org/OpenGL/specs/gl/glspec10.pdf)
 (1 July 1994). All samples below are taken before swapping.
@@ -24,6 +28,7 @@ Expected results come from the [desktop OpenGL 1.0 specification](https://regist
 | Source-alpha blend | Half-alpha red over blue yields roughly half red and half blue, with no green. The corner stays blue. | §4.1.6 |
 | Texture component counts | Upload counts 1–4 with matching luminance, luminance-alpha, RGB and RGBA data. Sample each over blue to check color and, where present, alpha. | §3.8, table 3.6 |
 | RGB texture from RGBA bytes | With unpack alignment 8, upload two rows with different colors and source alpha. Both must render opaque over blue; the padding must not affect the second row or change the caller's alignment. | §§3.6.1, 3.8 |
+| Named RGB and subimage update | Named RGB storage also drops source alpha; empty storage accepts a later RGB update. | [GL 1.1 §3.8](https://registry.khronos.org/OpenGL/specs/gl/glspec11.pdf) |
 | Switch unshared GLX contexts | A has blending enabled and green current color; fresh B has blending disabled and white current color. Switching back to A recovers its state. | §2.7 and chapter 6 state tables for defaults; GLX handles the switch |
 
 The bound drawable must have at least 8 bits per RGB channel and 16 bits of depth.

@@ -152,6 +152,7 @@ To reproduce with the unmodified engine, build only the classic renderer
 and use the OpenArena data (no retail Quake III files needed):
 
 ```sh
+pkg install pulseaudio libogg libvorbis pkg-config
 mkdir -p "$D/oa" && cd "$D/oa"
 git clone https://github.com/ioquake/ioq3.git && cd ioq3
 git checkout --detach e505e34d79d40585a5e2731c459404aefb0b2d1b
@@ -165,15 +166,24 @@ curl -fL https://downloads.sourceforge.net/project/oarena/openarena-0.8.8.zip -o
 echo '5a8faf7f5b51f351b0a1618c06b6b98a5f1a6758f1d39818de2c87df2a0bac4a  oa.zip' | sha256sum -c - &&
   bsdtar -xf oa.zip 'openarena-0.8.8/baseoa/*.pk3'
 cd ioq3/build/release-linux-arm64
+pulseaudio --check || pulseaudio --start
 zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" ./ioquake3.arm64 \
   +set com_basegame baseoa +set fs_basepath "$D/oa/openarena-0.8.8" \
   +set fs_homepath "$D/oa/profile" +set cl_renderer opengl1 +set r_fullscreen 1 \
-  +set r_mode -2 +set r_ignorehwgamma 1 +set s_initsound 0 +set net_enabled 0 \
+  +set r_mode -2 +set r_ignorehwgamma 1 +set s_initsound 1 +set net_enabled 0 \
   +set bot_minplayers 3 +map oa_dm1
 ```
 
+For normal play, look for `SDL audio driver is "pulseaudio"` and
+`Sound initialization successful.` The M31 opened the effects stream but
+could not open the map music `music/sonic6.ogg`. To reproduce the graphics
+timings below, change only `+set s_initsound 1` to `+set s_initsound 0`.
+
 The stock engine now passes [its required-function check](https://github.com/ioquake/ioq3/blob/e505e34d79d40585a5e2731c459404aefb0b2d1b/code/sdl/sdl_glimp.c#L262-L323)
-and logs `rendering primitives: multiple glArrayElement`. Once a bot has
+and, with the compiled-vertex-array extension enabled on desktop GLES1,
+logs `rendering primitives: single glDrawElements` on Auto. Builds without
+the extension log `multiple glArrayElement`. See the
+[same-replay comparison](coverage.md#game-paths-openarena-088). Once a bot has
 entered the map, enter these commands in the game console:
 
 ```text

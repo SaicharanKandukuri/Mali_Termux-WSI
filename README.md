@@ -2,6 +2,8 @@
 
 Window System Integration (XCB) for Mali GPUs on Termux (Termux:X11).
 
+To run **OpenArena** on this fork, follow the [native Termux setup](tests/demos.md#one-time-setup), then the [fullscreen game recipe](tests/demos.md#openarena-088-ioquake3-desktop-gl-11). The [benchmark instructions and M31 results](tests/coverage.md#game-paths-openarena-088) use the same game and renderer.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

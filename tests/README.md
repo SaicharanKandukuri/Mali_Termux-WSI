@@ -23,6 +23,7 @@ Expected results come from the [desktop OpenGL 1.0 specification](https://regist
 | Depth, `GL_LESS` | Against cleared depth 1, window depth 0.5 passes (red); 0.75 fails (still red); 0.25 passes (green). | §4.1.5 |
 | Source-alpha blend | Half-alpha red over blue yields roughly half red and half blue, with no green. The corner stays blue. | §4.1.6 |
 | Texture component counts | Upload counts 1–4 with matching luminance, luminance-alpha, RGB and RGBA data. Sample each over blue to check color and, where present, alpha. | §3.8, table 3.6 |
+| RGB texture from RGBA bytes | With unpack alignment 8, upload two rows with different colors and source alpha. Both must render opaque over blue; the padding must not affect the second row or change the caller's alignment. | §§3.6.1, 3.8 |
 | Switch unshared GLX contexts | A has blending enabled and green current color; fresh B has blending disabled and white current color. Switching back to A recovers its state. | §2.7 and chapter 6 state tables for defaults; GLX handles the switch |
 
 The bound drawable must have at least 8 bits per RGB channel and 16 bits of depth.

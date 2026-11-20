@@ -128,7 +128,91 @@ GLC void glDrawElements(unsigned mode, int count, unsigned type, const void* ind
     pm_draw_idx(mode, v, count); free(v);
 }
 
+typedef struct { int align, rowlen, skiprows, skippixels, subimage; } dx_unpack;
+
+static int dx_driver_ext(const char* name) {
+    const char* ext = (const char*)RP(glGetString, F_gstr)(0x1F03);
+    size_t n = strlen(name);
+    for (const char* p = ext; p && (p = strstr(p, name)); p += n)
+        if ((p == ext || p[-1] == ' ') && (!p[n] || p[n] == ' ')) return 1;
+    return 0;
+}
+
+/* Return false rather than treating a PBO offset or invalid layout as a host pointer. */
+static int dx_rgba_to_rgb(const void* pixels, int w, int h, dx_unpack* u, unsigned char** out) {
+    int pbo = 0;
+    *out = NULL;
+    if (dx_driver_ext("GL_NV_pixel_buffer_object")) {
+        RP(glGetIntegerv, F_geti)(0x88EF, &pbo);          /* PIXEL_UNPACK_BUFFER_BINDING_NV */
+        if (pbo) return 0;
+    }
+    if (!pixels || !w || !h) return 1;
+
+    u->rowlen = u->skiprows = u->skippixels = 0;
+    u->subimage = dx_driver_ext("GL_EXT_unpack_subimage");
+    RP(glGetIntegerv, F_geti)(0x0CF5, &u->align);
+    if (u->subimage) {
+        RP(glGetIntegerv, F_geti)(0x0CF2, &u->rowlen);
+        RP(glGetIntegerv, F_geti)(0x0CF3, &u->skiprows);
+        RP(glGetIntegerv, F_geti)(0x0CF4, &u->skippixels);
+    }
+    if ((u->align != 1 && u->align != 2 && u->align != 4 && u->align != 8) ||
+        u->rowlen < 0 || u->skiprows < 0 || u->skippixels < 0) return 0;
+
+    size_t top = (size_t)-1, rowsize = (size_t)(u->rowlen ? u->rowlen : w);
+    if (rowsize > top / 4 || (size_t)w > top / 4 || (size_t)w > top / 3 ||
+        (size_t)u->skippixels > top / 4) return 0;
+    size_t rowbytes = rowsize * 4, readbytes = (size_t)w * 4, writebytes = (size_t)w * 3;
+    if (rowbytes > top - (size_t)(u->align - 1)) return 0;
+    size_t stride = (rowbytes + (size_t)(u->align - 1)) & ~(size_t)(u->align - 1);
+    size_t offset = (size_t)u->skippixels * 4;
+    if ((size_t)u->skiprows > (top - offset) / stride) return 0;
+    offset += (size_t)u->skiprows * stride;
+    if ((size_t)(h - 1) > (top - offset) / stride ||
+        readbytes > top - offset - (size_t)(h - 1) * stride ||
+        (size_t)h > top / writebytes) return 0;
+
+    unsigned char* rgb = malloc(writebytes * (size_t)h);
+    if (!rgb) return 0;
+    const unsigned char* src = (const unsigned char*)pixels + offset;
+    for (int y = 0; y < h; y++) {
+        const unsigned char* s = src + (size_t)y * stride;
+        unsigned char* d = rgb + (size_t)y * writebytes;
+        for (int x = 0; x < w; x++) {
+            d[(size_t)x * 3 + 0] = s[(size_t)x * 4 + 0];
+            d[(size_t)x * 3 + 1] = s[(size_t)x * 4 + 1];
+            d[(size_t)x * 3 + 2] = s[(size_t)x * 4 + 2];
+        }
+    }
+    *out = rgb;
+    return 1;
+}
+
+static void dx_unpack_set(const dx_unpack* u, int tight) {
+    RP(glPixelStorei, F_pstore)(0x0CF5, tight ? 1 : u->align);
+    if (u->subimage) {
+        RP(glPixelStorei, F_pstore)(0x0CF2, tight ? 0 : u->rowlen);
+        RP(glPixelStorei, F_pstore)(0x0CF3, tight ? 0 : u->skiprows);
+        RP(glPixelStorei, F_pstore)(0x0CF4, tight ? 0 : u->skippixels);
+    }
+}
+
 GLC void glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void* p) {
+    unsigned char* rgb = NULL;
+    dx_unpack unpack = { 0 };
+
+    /* Quake supplies RGBA bytes for RGB storage; GLES1 requires matching formats. */
+    if (i == 3 && f == 0x1908 && ty == 0x1401 && emu_ver() == 1 &&
+        t == 0x0DE1 && l >= 0 && l < 31 && b == 0 && w >= 0 && h >= 0) {
+        int max = 0;
+        RP(glGetIntegerv, F_geti)(0x0D33, &max);          /* GL_MAX_TEXTURE_SIZE */
+        int limit = max > 0 ? max >> l : 0;
+        if (limit > 0 && w <= limit && h <= limit && dx_rgba_to_rgb(p, w, h, &unpack, &rgb)) {
+            i = f = 0x1907;                              /* GL_RGB */
+            p = rgb;
+            if (rgb) dx_unpack_set(&unpack, 1);
+        }
+    }
     /* GL 1.0 component counts; ES1 needs the named base format. Only alias identical layouts. */
     static const unsigned base[] = {0x1909, 0x190A, 0x1907, 0x1908}; /* L, LA, RGB, RGBA */
     if (i >= 1 && i <= 4 && f == base[i-1] && emu_ver() == 1)
@@ -138,6 +222,10 @@ GLC void glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f,
         if (i == 0x1908 || i == 0x8058) i = 0x80E1;      /* internal = BGRA_EXT (ES requires format == internal) */
     }
     RP(glTexImage2D, F_teximg)(t1d(t), l, i, w, h, b, f, ty, p);
+    if (rgb) {
+        dx_unpack_set(&unpack, 0);
+        free(rgb);
+    }
     if (t == 0x84F5 && l == 0 && dx_emulated()) {
         RP(glTexParameteri, F_da)(0x0DE1, 0x2801, 0x2601);
         RP(glTexParameteri, F_da)(0x0DE1, 0x2802, 0x812F);

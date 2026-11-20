@@ -119,9 +119,9 @@ zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" \
   -nostdin -nojoy -novbo -noglsl -condebug +r_lightmapwide 0 +r_oldwater 0 +playdemo demo1
 ```
 
-Keep the engine patch: it uses `glFogf` and explicit RGBA internal formats.
-Unlike dinoshade, Quake also uploads RGBA bytes when requesting three
-components. The shim does not convert between those layouts. Check `qconsole.log`
+The engine patch now changes only the fog call to `glFogf`. Build with the
+original `gl_texmgr.c`: solid textures use RGB storage even though Quake
+supplies RGBA bytes, and alpha textures keep all four channels. Check `qconsole.log`
 for the video mode, ARM renderer and `Playing demo from demo1.dem`. For the
 [water regression](quake-water.md), keep warp mipmaps enabled and check the
 same surface in E1M3. To measure throughput instead of showing normal playback,

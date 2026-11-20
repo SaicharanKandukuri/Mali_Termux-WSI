@@ -67,6 +67,30 @@ static int component_textures(void)
         triangle_z(0);
         ok &= sample(cases[j].name, 64, 64, cases[j].rgb[0], cases[j].rgb[1], cases[j].rgb[2]);
     }
+    /* Quake requests RGB storage for RGBA bytes. With blending on, retaining
+       either source alpha would change the result. Row two starts at byte 8. */
+    const GLubyte solid[] = {211, 13, 37, 0, 99, 99, 99, 99, 17, 197, 41, 64};
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 8);
+    glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, solid);
+    ok &= errors("RGB from RGBA upload");
+    GLint alignment = 0;
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+    if (alignment != 8) { puts("FAIL unpack alignment changed"); ok = 0; }
+    for (int row = 0; row < 2; ++row) {
+        glTexCoord2f(0.5f, row ? 0.75f : 0.25f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        triangle_z(0);
+        ok &= sample("RGB from RGBA, opaque", 64, 64,
+                     solid[8*row], solid[8*row+1], solid[8*row+2]);
+    }
+    /* Storage-only uploads must not read a null client pointer. */
+    glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    ok &= errors("RGB storage without data");
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, solid);
+    glClear(GL_COLOR_BUFFER_BIT);
+    triangle_z(0);
+    ok &= sample("RGB storage after update", 64, 64, 211, 13, 37);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glDisable(GL_BLEND);
     glDisable(GL_TEXTURE_2D);
     return ok;

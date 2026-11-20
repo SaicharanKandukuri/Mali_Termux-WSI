@@ -9,27 +9,3 @@ index fb50541..6a2a87c 100644
 -	glFogi(GL_FOG_MODE, GL_EXP2);
 +	glFogf(GL_FOG_MODE, GL_EXP2);
  }
-diff --git a/Quake/gl_texmgr.c b/Quake/gl_texmgr.c
-index 17f2823..b387c3e 100644
---- a/Quake/gl_texmgr.c
-+++ b/Quake/gl_texmgr.c
-@@ -24,8 +24,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- 
- #include "quakedef.h"
- 
--static const int	gl_solid_format = 3;
--static const int	gl_alpha_format = 4;
-+static const int	gl_solid_format = GL_RGBA;
-+static const int	gl_alpha_format = GL_RGBA;
- 
- static cvar_t	gl_texturemode = {"gl_texturemode", "", CVAR_ARCHIVE};
- static cvar_t	gl_texture_anisotropy = {"gl_texture_anisotropy", "1", CVAR_ARCHIVE};
-@@ -1256,7 +1256,7 @@ static void TexMgr_LoadLightmap (gltexture_t *glt, byte *data)
- {
- 	const qboolean wide10bits = !!r_lightmapwide.value;
- 	const GLenum type = wide10bits ? GL_UNSIGNED_INT_10_10_10_2 : GL_UNSIGNED_BYTE;
--	const GLint internalfmt = wide10bits ? GL_RGB10_A2 : lightmap_bytes;
-+	const GLint internalfmt = wide10bits ? GL_RGB10_A2 : gl_lightmap_format;
- 
- 	// upload it
- 	GL_Bind (glt);

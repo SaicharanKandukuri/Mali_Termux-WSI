@@ -1,7 +1,6 @@
 # Quake: white water on Mali-G72
 
-On the Galaxy M31 the fixed driver renders QuakeSpasm's normal water in
-*The Necropolis* with warp mipmaps enabled. Keep `r_oldwater 0` and omit
+For textured, warped water in *The Necropolis*, keep `r_oldwater 0` and omit
 `-nowarpmipmaps`. On older builds, `-nowarpmipmaps` is a workaround.
 
 To check the fix (or reproduce the failure with the previous driver), start
@@ -25,13 +24,9 @@ generates mipmaps. Classic water bypasses that pass.
 
 ## Where the white surface comes from
 
-On this M31, nine RGB samples of the 512×512 warp matched before the framebuffer
-copy and after sampling the copied base level with nearest filtering.
-`glCopyTexSubImage2D` returned no error. The subsequent
-`glGenerateMipmapEXT(GL_TEXTURE_2D)` produced `GL_INVALID_OPERATION` (0x0502);
-sampling with the game's mipmap filter gave white at all nine points.
-With warp mipmaps disabled, the same camera showed textured water even with
-`r_oldwater 0`.
+The framebuffer copy populated mip level 0 correctly. The failure was in
+`glGenerateMipmapEXT(GL_TEXTURE_2D)`: it returned `GL_INVALID_OPERATION`,
+leaving the texture white when sampled with the game's mipmap filter.
 
 Run the standalone regression after the [Termux setup](demos.md):
 
@@ -41,17 +36,7 @@ zen "$D/gl-copy-water"
 zen "$D/gl-copy-water" --oes
 ```
 
-Both runs use the same ES1-backed GLX context type, red/green framebuffer
-pattern and blue pre-filled mip levels. The desktop EXT entry failed and the
-minified image stayed blue (exit 1); the GLES OES entry regenerated the mips,
-turning the samples red and green (exit 0). Exit 2 means the display, context
-or requested entry point was unavailable. This tests the entry point through
-ZenFox, not just its presence in an extension string.
-
-After the fix the desktop EXT wrapper selects the vendor OES function when it
-is exported and the calling thread has a GLES 1 context. Other contexts keep
-the previous lookup. On the M31 the same probe binary failed with the old
-library but passed with the fixed one (both EXT and OES). The fixed library
-also passed the GL 1.0 smoke test. Quake logged `FOUND: glGenerateMipmapEXT`
-and showed textured water at the camera above without either workaround.
-The pixel probe uses immediate-mode drawing; it does not verify GLES 2/3.
+Both commands should turn the blue pre-filled mip levels red and green
+(exit 0). Exit 1 indicates a failed check; exit 2 means the display, context
+or entry point was unavailable. On GLES1, the desktop EXT wrapper uses the
+vendor OES function when exported. This probe does not verify GLES 2/3.

@@ -1,7 +1,7 @@
 # Desktop GL 1.x coverage
 
 Target: native Termux, SDL/X11 or GLX, ZenFox's desktop-on-GLES1 runtime
-(`GLX_ES=1`). Results below are for the Galaxy M31 / Mali-G72. An exported
+(`GLX_ES=1`). An exported
 symbol or reported GL version is not a behavior test. Anything not covered
 by a named check below is **untested**, not a pass or an inferred failure.
 
@@ -31,11 +31,7 @@ incorrect behavior is a failure. This table is not a list of all advertised exte
 | [EXT_compiled_vertex_array](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_compiled_vertex_array.txt) | On desktop GL over GLES1, GL and SDL advertise it and SDL resolves both functions. The locked draw, per-context range, four query types, error cases and display-list checks pass. No vertex cache or extra geometry copy is used. | Unmodified OpenArena now selects indexed triangles on Auto. |
 | EXT_framebuffer_object | Advertised; only the desktop mipmap-generation entry is verified by the [Quake water regression](quake-water.md), not the whole extension. | QuakeSpasm's default water samples textured mip levels after the fix. |
 
-Positive control: the [same array probe](demos.md#openarena-088-ioquake3-desktop-gl-11)
-on the same M31 with Termux Mesa 26.2.6 (llvmpipe) found the extension through
-GL and SDL, resolved both functions, drew the expected pixels while locked,
-and checked the lock range and errors for invalid calls. This result verifies
-the probe's advertised-extension path, not ZenFox support.
+Use [Mesa llvmpipe as a reference](demos.md#openarena-088-ioquake3-desktop-gl-11) for the lock and error checks.
 
 ## Game paths: OpenArena 0.8.8
 
@@ -45,11 +41,7 @@ in the classic GL1 renderer on Auto (`r_primitives 0`) logged
 With the extension, stock settings (`r_primitives 0`, `r_ext_compiled_vertex_array 1`)
 log `compiled vertex arrays: enabled` and `rendering primitives: single glDrawElements`.
 
-| Path | Same 296-frame replay, twice | Mean frame time |
-| --- | --- | --- |
-| Before: strips (`r_primitives 1`, equivalent to the old Auto) | 8.0 / 7.9 FPS | 124.9 / 126.3 ms |
-| Before: indexed triangles (forced `r_primitives 2`) | 52.9 / 51.7 FPS | 18.9 / 19.3 ms |
-| After: indexed triangles (Auto, no override) | 51.2 / 52.0 FPS | 19.5 / 19.2 ms |
+**Mali-G72, 1080×1997 fullscreen:** 51–52 FPS on Auto with indexed triangles; about 8 FPS on the strip path used by the old Auto setting (same 296-frame replay, swap interval 0, sound off).
 
 To repeat: [build, launch fullscreen and record a match](demos.md#openarena-088-ioquake3-desktop-gl-11).
 From the **main menu** (disconnect from the live match first), run these in the game console:
@@ -65,7 +57,6 @@ Wait for each replay to finish. Repeat Auto with a new filename. For a forced
 comparison run the same recording with modes 1 and 2, saving distinct logs.
 Read the frame count, elapsed time
 and frame durations in the profile's `baseoa/` logs. Restore `timedemo 0`,
-`cl_timedemoLog ""` and your original `r_primitives` afterwards. The M31 runs
-used 1080×1997 fullscreen, swap interval 0, sound disabled, and the same map and graphics settings.
+`cl_timedemoLog ""` and your original `r_primitives` afterwards.
 These are engine frame times, not display refresh rates; different recordings
 need not reproduce the same absolute numbers.

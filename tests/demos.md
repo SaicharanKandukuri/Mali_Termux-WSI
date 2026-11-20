@@ -1,9 +1,7 @@
 # Run the ZenFox demos in native Termux
 
 Run the setup and one demo at a time in the same shell. This uses a private
-build directory, not replacement libraries in `$PREFIX/lib`. Tested graphics
-stack: Galaxy M31, Android 13, Mali-G72. The original demos used revision
-`471e044`; the default Quake water needs the subsequent ES1 mipmap fix.
+build directory, not replacement libraries in `$PREFIX/lib`.
 
 ## One-time setup
 
@@ -44,7 +42,7 @@ zen() { env GLX_ES=1 LD_LIBRARY_PATH="$R" "$@"; }
 
 Use `-L"$W/build"` to link, `zen` to run. Neither `$W/build` nor
 `$PREFIX/lib` belongs in the runtime override. In particular, exposing
-ZenFox's unversioned `libEGL.so` broke Android gralloc on the M31.
+Android gralloc to ZenFox's unversioned `libEGL.so` can prevent startup.
 
 ## GL 1.0 baseline (automated, not a fullscreen demo)
 
@@ -67,8 +65,7 @@ clang mesa-demos-8.4.0/src/xdemos/glxgears.c -L"$W/build" -lGL -lX11 -lm -o gear
 zen ./gears -fullscreen -info
 ```
 
-Look for three lit, rotating gears and `GL_RENDERER = Mali-G72` on the M31.
-The original M31 capture was windowed; the command above requests fullscreen.
+Look for three lit, rotating gears and check that `GL_RENDERER` names your GPU.
 The printed frame counter is not the display refresh rate.
 
 ## Dinoshade
@@ -85,16 +82,11 @@ zen ./dinoshade
 The patch uses the screen size for the window and projection and the core
 polygon-offset entry instead of the unavailable EXT symbol. Use the driver's
 GLU/GLUT: Termux's packaged GLUT required an unexported `glPushClientAttrib`.
-The dinosaur's dark faces can look like gaps. At the same fixed camera and
-light angle, desktop OpenGL showed the same shading. With lighting, reflection
-and shadows off, the solid-color dinosaur covered exactly the same 5,000 pixels
-on both renderers in a 270×500 sample, with or without face culling.
+Dark faces on the dinosaur are expected shading, not missing geometry.
 
 Look for green rings on the floor. Leave the demo's original texture call
 alone: it uploads RGB bytes and requests three components. The desktop GL
-shim translates `3` to `GL_RGB` for GLES1. On the M31, the old driver
-returned `GL_INVALID_VALUE`; the fixed driver rendered the same pixels as
-the explicit `GL_RGB` comparison at a fixed camera and light angle.
+shim translates `3` to `GL_RGB` for GLES1.
 
 ## QuakeSpasm (Quake shareware)
 
@@ -140,10 +132,7 @@ env -u LD_LIBRARY_PATH -u GLX_ES LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEODRIVER=x11 \
   SDL_VIDEO_GL_DRIVER="$PREFIX/lib/libGL.so.1" "$D/array-element"
 ```
 
-On the M31 at `671570c`, only Mesa (llvmpipe) resolved `glArrayElement`.
-The fixed desktop-on-GLES1 shim and Mesa both pass the strip, subsequent
-indexed draw, strided client arrays, mixed vertices, VBO/EBO and two-texture
-checks. Pure element strips use the driver's arrays directly. Mixed blocks
+Pure element strips use the driver's arrays directly. Mixed blocks
 (elements interleaved with explicit vertices or attributes) support client
 memory and texture unit 0, not buffer-backed attributes or multiple texture
 coordinate arrays. This tests a subset of desktop GL 1.1, not conformance.
@@ -175,8 +164,8 @@ zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" ./ioquake3.arm64
 ```
 
 For normal play, look for `SDL audio driver is "pulseaudio"` and
-`Sound initialization successful.` The M31 opened the effects stream but
-could not open the map music `music/sonic6.ogg`. To reproduce the graphics
+`Sound initialization successful.` A missing map track (`music/sonic6.ogg`)
+does not disable sound effects. To reproduce the graphics
 timings below, change only `+set s_initsound 1` to `+set s_initsound 0`.
 
 The stock engine now passes [its required-function check](https://github.com/ioquake/ioq3/blob/e505e34d79d40585a5e2731c459404aefb0b2d1b/code/sdl/sdl_glimp.c#L262-L323)
@@ -196,7 +185,4 @@ After a few seconds, use `stoprecord`, then `demo zen-oa` to replay the match.
 The recording is in `$D/oa/profile/baseoa/demos/`.
 
 If the HUD appears but the room is white, check the named RGB upload in
-the GL 1.0 baseline. With only the array-element fix, this build of ioquake3
-entered the map but ZenFox still rejected RGBA bytes for `GL_RGB` storage.
-Accepting the named format as well as numeric `3` restored the textures on
-the M31 without changing the game or its graphics settings.
+the baseline: the driver must accept RGBA source bytes for `GL_RGB` storage.

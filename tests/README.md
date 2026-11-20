@@ -42,12 +42,8 @@ Check the triangle on the actual display or capture it separately. Pre-swap
 readback does not prove X11 presentation, and a returned swap does not prove
 visible pixels.
 
-On a Galaxy M31 (Android 13, Mali-G72), the expanded checks passed with RGB8,
-24-bit depth, and blended RGB (127,0,127). The swapped triangle was visible
-in the original baseline run. Adding only the unversioned
-`libEGL.so` shim to the runtime directory made gralloc abort before the first
-readback; removing it restored the pass. Use `build` for linking and
-`build/gl-runtime` for running the test. No root is required.
+Link against `build` and run with `build/gl-runtime`. Keep the unversioned
+`libEGL.so` shim out of the runtime path so Android gralloc can load the system EGL library.
 
 For sources, build commands and fullscreen launches for Mesa gears, dinoshade
 and QuakeSpasm, see the [Termux demo recipes](demos.md). Record the same

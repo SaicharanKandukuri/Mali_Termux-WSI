@@ -212,7 +212,7 @@ driver as the last link.
 Path: `API/GL`
 
 A `libGL.so.1` that provides GLX 1.4 on top of the EGL shim and emulates
-desktop OpenGL (1.x up to 4.4 core/compat) over the GLES that Mali offers.
+desktop OpenGL (1.x up to 4.5 core and 3.2 compat) over the GLES that Mali offers.
 It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
 ### Layout

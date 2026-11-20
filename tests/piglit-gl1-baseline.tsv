@@ -1,0 +1,15 @@
+test	exit	piglit
+gl-1.0-scissor-clear	1	PIGLIT: {"result": "fail" }
+gl-1.1-draw-arrays-start	0	PIGLIT: {"result": "pass" }
+sized-texture-format-channels	0	PIGLIT: {"result": "pass" }
+gl-1.0-textured-triangle	1	PIGLIT: {"result": "fail" }
+gl-1.1-color-material-array	1	PIGLIT: {"result": "fail" }
+gl-1.0-texture-matrix-push-pop	0	PIGLIT: {"result": "pass" }
+gl-1.0-empty-begin-end-clause	0	PIGLIT: {"result": "pass" }
+gl-1.0-dlist-beginend	1	PIGLIT: {"result": "fail" }
+gl-1.0-edgeflag-quads	1	PIGLIT: {"result": "fail" }
+gl-1.0-scissor-offscreen	1	PIGLIT: {"result": "fail" }
+gl-1.0-scissor-depth-clear	1	PIGLIT: {"result": "fail" }
+gl-1.1-set-vertex-color-after-draw	0	PIGLIT: {"result": "pass" }
+varray-GL_TRIANGLES	1	PIGLIT: {"result": "fail" }
+varray-GL_QUADS	1	PIGLIT: {"result": "fail" }

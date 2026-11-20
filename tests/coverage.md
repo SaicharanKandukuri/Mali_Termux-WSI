@@ -18,6 +18,30 @@ For new core entries, start from the version's specification and the
 Record the expected result and add a check for it; a callable name by itself
 doesn't establish correct pixels, state transitions or GL errors.
 
+### Piglit desktop baseline
+
+On Mali-G72 with Waffle/GLX and `GLX_ES=1`, a [14-case subset](piglit-gl1-baseline.tsv)
+of [Piglit at c8388b5](https://gitlab.freedesktop.org/mesa/piglit/-/tree/c8388b5932ddd582444b7a71a1d4cc84d3bc119b)
+reported 5 passes and 9 failures, with no timeouts. This is not conformance:
+`gl-1.1-draw-arrays-start` reported a pass despite logging pixel mismatches.
+The two vertex-count cases used `100000 varray` with the indicated primitive.
+
+The [readback control](gl-readback-control.c) isolates a shared failure: after a green clear,
+RGBA/unsigned-byte reads green, but RGB/float and RGBA/float return `GL_INVALID_ENUM`
+and leave the destination untouched. Piglit uses float reads for desktop color probes;
+a failed comparison alone does not prove the draw was wrong. Separately, Piglit
+could not resolve `glEdgeFlag` or `glColorMaterial`.
+
+With the [Termux environment](demos.md#one-time-setup), run:
+
+```sh
+clang "$W/tests/gl-readback-control.c" -L"$W/build" -lGL -lX11 -o "$D/readback-control"
+zen "$D/readback-control"
+```
+
+This diagnostic prints the GL error and destination for each call; exit zero
+means the probe completed, not that all reads succeeded.
+
 ## Optional extensions
 
 Record the **advertised name**, the **functions resolved by the application**,

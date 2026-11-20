@@ -106,12 +106,12 @@ cp "$D/quakespasm/Quake/quakespasm.pak" .
 
 zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" \
   "$D/quakespasm/Quake/quakespasm" -basedir "$PWD" -current -fullscreen \
-  -nostdin -nojoy -novbo -noglsl -condebug +r_lightmapwide 0 +r_oldwater 1 +playdemo demo1
+  -nostdin -nojoy -novbo -noglsl -nowarpmipmaps -condebug +r_lightmapwide 0 +r_oldwater 0 +playdemo demo1
 ```
 
 The engine patch uses `glFogf` and explicit RGBA internal formats. The original
 numeric texture formats left walls white on this driver. Check `qconsole.log`
 for the video mode, ARM renderer and `Playing demo from demo1.dem`. For the
-[water comparison](quake-water.md), set `r_oldwater 0` to test the default
-warp-texture path. To measure throughput instead of showing normal playback,
+[water comparison](quake-water.md), omit `-nowarpmipmaps` to reproduce the
+M31's mipmap-generation failure. To measure throughput instead of showing normal playback,
 replace `+playdemo demo1` with `+timedemo demo1`.

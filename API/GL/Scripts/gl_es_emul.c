@@ -39,7 +39,7 @@ static inline int gl_emul_debug_enabled(void) {
 static int emu_ver(void) { return (T_glx.ctx && !T_glx.ctx->es_native) ? T_glx.ctx->ver : 0; }
 
 /* ===== A) OpenGL 4.3 Spoofing Check ===== */
-static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43, 44 };
+static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43, 44, 45 };
 #define GL_EMU_COMPAT_ES1  15      /* ES1 ctx -> "1.5" */
 #define GL_EMU_COMPAT_ES2  21      /* ES2 ctx -> "2.1" */
 #define GL_EMU_COMPAT_ES3  32
@@ -110,11 +110,13 @@ static const char* gl_glsl_for(int g) {
         case 42:  return "4.20"; 
         case 43:  return "4.30";
         case 44:  return "4.40";
+        case 45:  return "4.50";
         default:  return "1.50"; 
     }
 }
 
-static int gl43(void) { return gl_emu_ver() >= 44; }
+static int gl43(void) { return gl_emu_ver() >= 43; }
+
 
 /* ===== B) ARB extensions genuinely covered by ES 3.2 ===== */
 static const char* const emu_arb3[] = {
@@ -142,7 +144,7 @@ static const char* const emu_arb3[] = {
 };
 
 #define EMU_ALL  ((int)(sizeof emu_arb3 / sizeof emu_arb3[0]))
-#define EMU_N3   (gl43() ? EMU_ALL : EMU_ALL - 12)
+#define EMU_N3 (gl43() ? EMU_ALL : EMU_ALL - 14)
 
 static const char emu_arb1[] =
     " GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_env_combine"
@@ -725,6 +727,8 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
             fprintf(stderr, "[ssbo-lim] 0x%x real=%d (err=0x%x)\n", pname, r, e);
         }
         if (!e && r >= 0) {
+            /* vertex SSBO: emulated via textures (gl_ssbo.c) */
+            if (pname == 0x90D6 && r < 16) r = 16;
             *v = r;
             return;
         }
@@ -771,50 +775,38 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
                 ext_build();
                 if (ext_tab) { *v = ext_n; return; }
             }
-            int n = 0; 
-            RP(glGetIntegerv, F_geti)(0x821D, &n); 
-            *v = n + EMU_N3; 
+            int n = 0;
+            RP(glGetIntegerv, F_geti)(0x821D, &n);
+            *v = n + EMU_N3;
             return;
         }
-        
-        /* Desktop GL Fallback Mocks foar Mali GLES */
-        case 0x8824: *v = 16;     return; /* GL_MAX_VERTEX_ATTRIBS */
-        case 0x88FF: *v = 36;     return; /* GL_MAX_UNIFORM_BUFFER_BINDINGS */
+
+        /* Desktop GL fallback mocks for Mali GLES */
         case 0x8871: *v = 8;      return; /* GL_MAX_TEXTURE_COORDS */
         case 0x88A0: *v = 16;     return; /* GL_MAX_VERTEX_UNIFORM_BLOCKS */
-        case 0x8B49: *v = 0x85B5; return; /* GL_FRAGMENT_SHADER_DERIVATIVE_HINT -> GL_DONT_CARE */
-        case 0x8073: *v = 0;      return; /* GL_TEXTURE_COORD_ARRAY / Legacy state fallback */
 
-        /* Nije mocks foar 0x8B4A en 0x8A2F */
-        case 0x8B4A: *v = 0x85B5; return; /* Derivative hint / Shader GLSL state fallback */
-        case 0x8A2F: *v = 256;    return; /* GL_MAX_FRAGMENT_UNIFORM_VECTORS fallback */
-        
-        /* Compute Shaders */
+        /* Compute shaders */
         case 0x91BE: v[0] = 65535; v[1] = 65535; v[2] = 65535; return;
-        case 0x91BF: v[0] = 1024; v[1] = 1024; v[2] = 64; return; 
-        case 0x90EB: *v = 1024; return;  
-        case 0x8262: *v = 12; return;
+        case 0x91BF: v[0] = 1024;  v[1] = 1024;  v[2] = 64;    return;
+        case 0x90EB: *v = 1024;   return;
+        case 0x8262: *v = 12;     return;
 
         /* Shader Storage Buffer Objects (SSBO) */
         case 0x90D2: *v = 134217728; return;
-        case 0x90D3: *v = 8; return;
+        case 0x90D3: *v = 8;         return;
 
         /* Tessellation */
         case 0x8E7D: *v = 64; return;
         case 0x8E7E: *v = 32; return;
-            
-        /* General limits */
-        case 0x8872: *v = 16; return;
-        case 0x8B4C: case 0x8B4D: *v = 4096; return;
         }
         if (pname == 0x935C) { *v = (int)cc_origin; return; }
         if (pname == 0x935D) { *v = (int)cc_depth;  return; }
-        if (pname == 0x0B46) { *v = (int)cc_front;  return; }   /* GL_FRONT_FACE, valoarea aplicației */
+        if (pname == 0x0B46) { *v = (int)cc_front;  return; } /* GL_FRONT_FACE, application state */
     } else if (ver == 2) {
         if (pname == 0x821B) { *v = 2; return; }
         if (pname == 0x821C) { *v = 1; return; }
     }
-    
+
     if (ver >= 1 && (pname == 0x86A2 || pname == 0x86A3)) {
         unsigned* l = NULL;
         int total = cs_merge(ver, &l);
@@ -847,78 +839,9 @@ GLC const unsigned char* glGetStringi(unsigned name, unsigned index) {
     return RP(glGetStringi, F_gstri)(name, index);
 }
 
-/* ---------- GLSL Translation ---------- */
-typedef void (*F_gsiv)(unsigned, unsigned, int*);
-typedef void (*F_gssrc)(unsigned, int, int*, char*);
-static char** sh_orig;
-static unsigned sh_cap;
-static pthread_mutex_t sh_mu = PTHREAD_MUTEX_INITIALIZER;
+/* ---------- GLSL Translation (moved) ---------- */
+#include "gl_glsl.c"
 
-static void sh_store(unsigned id, char* orig) {
-    if (id >= 1u << 20) { free(orig); return; }
-    pthread_mutex_lock(&sh_mu);
-    if (id >= sh_cap) {
-        unsigned nc = sh_cap ? sh_cap : 64;
-        while (nc <= id) nc *= 2;
-        sh_orig = realloc(sh_orig, nc * sizeof *sh_orig);
-        memset(sh_orig + sh_cap, 0, (nc - sh_cap) * sizeof *sh_orig);
-        sh_cap = nc;
-    }
-    free(sh_orig[id]);
-    sh_orig[id] = orig;
-    pthread_mutex_unlock(&sh_mu);
-}
-
-static char* sh_get_dup(unsigned id) {
-    char* r = NULL;
-    pthread_mutex_lock(&sh_mu);
-    if (id < sh_cap && sh_orig[id]) r = strdup(sh_orig[id]);
-    pthread_mutex_unlock(&sh_mu);
-    return r;
-}
-
-GLC void glGetShaderiv(unsigned sh, unsigned pname, int* v) {
-    if (pname == 0x8B88) {
-        char* o = sh_get_dup(sh);
-        if (o) { *v = (int)strlen(o) + 1; free(o); return; }
-    }
-    RP(glGetShaderiv, F_gsiv)(sh, pname, v);
-}
-
-GLC void glGetShaderSource(unsigned sh, int bufsize, int* length, char* out) {
-    char* o = sh_get_dup(sh);
-    if (!o) { RP(glGetShaderSource, F_gssrc)(sh, bufsize, length, out); return; }
-    int n = 0;
-    if (bufsize > 0 && out) {
-        n = (int)strlen(o);
-        if (n > bufsize - 1) n = bufsize - 1;
-        memcpy(out, o, (size_t)n); out[n] = 0;
-    }
-    if (length) *length = n;
-    free(o);
-}
-
-static int gl_has(const char* h, size_t hl, const char* n) {
-    size_t nl = strlen(n);
-    for (size_t i = 0; i + nl <= hl; i++) if (!memcmp(h + i, n, nl)) return 1;
-    return 0;
-}
-
-static int gl_idch(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
-
-static void gl_blank_word(char* s, size_t n, const char* w) {
-    size_t wl = strlen(w);
-    for (size_t i = 0; i + wl <= n; i++)
-        if (!memcmp(s + i, w, wl) && (i == 0 || !gl_idch(s[i - 1])) && (i + wl == n || !gl_idch(s[i + wl])))
-            memset(s + i, ' ', wl);
-}
-
-static void gl_rep_word(char* s, size_t n, const char* from, const char* to) {
-    size_t l = strlen(from);
-    for (size_t i = 0; i + l <= n; i++)
-        if (!memcmp(s + i, from, l) && (i == 0 || !gl_idch(s[i - 1])) && (i + l == n || !gl_idch(s[i + l])))
-            memcpy(s + i, to, l);
-}
 
 /* ===== E1) Word detection and unsupported types warning ===== */
 static int gl_word(const char* h, size_t hl, const char* w) {
@@ -1154,6 +1077,7 @@ static char* cd_inject(char* s, const char* pre, const char* post) {
 static void dl_shader(unsigned, const char*);
 static void dl_attach(unsigned, unsigned);
 static void dl_install(void);
+static char* xs_rewrite(const char* src);
 
 #include "gl_dsb.c"
 
@@ -1215,6 +1139,8 @@ static void gl_strip_depth_layout(char* b, size_t n) {
     }
 }
 
+  static char* gl_expand_paste(const char* src);
+  
 static char* glsl_to_es(const char* src) {
     static int said; if (!said && gl_emul_debug_enabled()) { said = 1; fprintf(stderr, "[glsl] build: dsb-vertex-fix\n"); }
     const char* v = strstr(src, "#version");
@@ -1233,7 +1159,7 @@ static char* glsl_to_es(const char* src) {
     char dn0[48] = {0}, dn1[48] = {0};
     int dsb = 0;
     int cc = 0;
-  
+      int has_bi = 0, has_bv = 0, has_di = 0;
     size_t blen = strlen(start);
     char* hdr  = malloc(blen + 64);
     char* body = malloc(blen + 1);
@@ -1278,6 +1204,22 @@ static char* glsl_to_es(const char* src) {
     else {
         gl_blank_word(body, bn, "noperspective");
         gl_strip_depth_layout(body, bn);
+       if (gl_word(body, bn, "gl_Position")) {
+         body[bn] = 0;
+char* pe = gl_expand_paste(body);
+if (pe) { free(body); body = pe; bn = strlen(pe); }
+
+char* r = xs_rewrite(body);
+            if (r) {
+                free(body); body = r; bn = strlen(r);
+                if (bn > blen) {
+                    blen = bn;
+                    char* o2 = realloc(out, blen * 2 + 8192);
+                    if (!o2) { free(hdr); free(body); free(out); return NULL; }
+                    out = o2;
+                }
+            }
+                }
         has1d = s1d_apply(body, bn);
         
         /* Filtrat activare TEXTURE_RECT */
@@ -1299,6 +1241,14 @@ static char* glsl_to_es(const char* src) {
             dsb_ok = 0;
         dsb = dsb_ok ? dsb_find(body, bn, dn0, dn1) : 0;
         gl_warn_unsupported(body, bn);
+              /* ARB_shader_draw_parameters -> uniforms */
+        has_bi = gl_word(body, bn, "gl_BaseInstanceARB");
+        has_bv = gl_word(body, bn, "gl_BaseVertexARB");
+        has_di = gl_word(body, bn, "gl_DrawIDARB");
+      
+        if (has_bi) gl_rep_word(body, bn, "gl_BaseInstanceARB", "xl_BaseInstance   ");
+        if (has_bv) gl_rep_word(body, bn, "gl_BaseVertexARB",   "xl_BaseVertex  ");
+        if (has_di) gl_rep_word(body, bn, "gl_DrawIDARB",       "xl_DrawID   ");
     }
 
     size_t on = (size_t)sprintf(out, legacy ? "#version 100\n" : "#version 320 es\n");
@@ -1327,6 +1277,9 @@ static char* glsl_to_es(const char* src) {
         if (has1d) on += s1d_wrappers(out + on);
         if (has2r) on += s2r_wrappers(out + on);
         if (has1a) on += s1a_wrappers(out + on);
+        if (has_bi) on += (size_t)sprintf(out + on, "uniform int xl_BaseInstance;\n");
+        if (has_bv) on += (size_t)sprintf(out + on, "uniform int xl_BaseVertex;\n");
+        if (has_di) on += (size_t)sprintf(out + on, "const int xl_DrawID = 0;\n");
         on += (size_t)sprintf(out + on, "#line 2\n");
     }
 
@@ -1393,6 +1346,7 @@ static char* glsl_to_es(const char* src) {
 }
 
 #include "gl_litfix.c"
+#include "gl_ssbo.c"
 
 static void cd_note(unsigned sh, int n);
 
@@ -1411,6 +1365,10 @@ GLC void glShaderSource(unsigned sh, int n, const char* const* str, const int* l
     gl_last_dsb = 0;
 
     char* t = (emu_ver() >= 2) ? glsl_to_es(j) : NULL;
+if (t) {
+    char* px = gl_expand_paste(t);
+    if (px) { free(t); t = px; }
+}
     cd_note(sh, t ? gl_last_cd : 0);
     dsb_note(sh, t ? gl_last_dsb : 0);
 
@@ -1945,14 +1903,14 @@ typedef void (*M_bit)(unsigned, unsigned, int, unsigned char, int, unsigned, uns
   
 GLC void glBindBuffersBase(unsigned target, unsigned first, int count, const unsigned* b) {
     for (int i = 0; i < count; i++)
-        RP(glBindBufferBase, M_bbb)(target, first + (unsigned)i, b ? b[i] : 0);
+        glBindBufferBase(target, first + (unsigned)i, b ? b[i] : 0);
 }
 
 GLC void glBindBuffersRange(unsigned target, unsigned first, int count, const unsigned* b,
                             const long* off, const long* size) {
     for (int i = 0; i < count; i++) {
-        if (b && b[i]) RP(glBindBufferRange, M_bbr)(target, first + (unsigned)i, b[i], off[i], size[i]);
-        else           RP(glBindBufferBase, M_bbb)(target, first + (unsigned)i, 0);
+        if (b && b[i]) glBindBufferRange(target, first + (unsigned)i, b[i], off[i], size[i]);
+        else           glBindBufferBase(target, first + (unsigned)i, 0);
     }
 }
 
@@ -2097,5 +2055,91 @@ GLC void glPrimitiveBoundingBoxARB(float minX, float minY, float minZ, float min
 }
       
 #include "gl_dsa.c"     
+
+/* ===== P) GL_ARB_base_instance emulated via vertex binding offsets (Mali has no EXT_base_instance) ===== */
+typedef void (*P_dai0)(unsigned, int, int, int);
+typedef void (*P_dei0)(unsigned, int, unsigned, const void*, int);
+typedef void (*P_deibv0)(unsigned, int, unsigned, const void*, int, int);
+
+typedef int  (*XB_gul)(unsigned, const char*);
+typedef void (*XB_u1i)(int, int);
+
+static void xb_set(const char* name, int v) {
+    int p = 0;
+    RP(glGetIntegerv, F_geti)(0x8B8D, &p);              /* CURRENT_PROGRAM */
+    if (!p) return;
+    int loc = RP(glGetUniformLocation, XB_gul)((unsigned)p, name);
+    if (loc >= 0) RP(glUniform1i, XB_u1i)(loc, v);
+}
+
+typedef struct { int n; unsigned idx[16], buf[16]; long long off[16]; int st[16]; } bi_sv;
+
+static void bi_shift(unsigned bi, bi_sv* s) {
+    int mx = 16;
+    s->n = 0;
+    if (!bi) return;
+    DP(glGetIntegerv, F_geti)(0x82DA, &mx);                       /* MAX_VERTEX_ATTRIB_BINDINGS */
+    if (mx > 16) mx = 16;
+    for (int i = 0; i < mx; i++) {
+        int div = 0, buf = 0, st = 0; long long off = 0;
+        DP(glGetIntegeri_v, D_gfp)(0x82D6, (unsigned)i, &div);    /* VERTEX_BINDING_DIVISOR */
+        if (!div) continue;
+        DP(glGetIntegeri_v, D_gfp)(0x8F4F, (unsigned)i, &buf);    /* VERTEX_BINDING_BUFFER */
+        if (!buf) continue;
+        DP(glGetInteger64i_v, D_gi64)(0x82D7, (unsigned)i, &off); /* VERTEX_BINDING_OFFSET */
+        DP(glGetIntegeri_v, D_gfp)(0x82D8, (unsigned)i, &st);     /* VERTEX_BINDING_STRIDE */
+        int k = s->n++;
+        s->idx[k] = (unsigned)i; s->buf[k] = (unsigned)buf; s->off[k] = off; s->st[k] = st;
+        DP(glBindVertexBuffer, M_bvb)((unsigned)i, (unsigned)buf,
+                                      (long)(off + (long long)bi * st), st);
+    }
+}
+static void bi_restore(const bi_sv* s) {
+    for (int k = 0; k < s->n; k++)
+        DP(glBindVertexBuffer, M_bvb)(s->idx[k], s->buf[k], (long)s->off[k], s->st[k]);
+}
+
+GLC void glDrawArraysInstancedBaseInstance(unsigned mode, int first, int count, int inst, unsigned bi) {
+    bi_sv s; bi_shift(bi, &s);
+    xb_set("xl_BaseInstance", (int)bi);
+    DP(glDrawArraysInstanced, P_dai0)(mode, first, count, inst);
+    xb_set("xl_BaseInstance", 0);
+    bi_restore(&s);
+}
+      
+GLC void glDrawElementsInstancedBaseInstance(unsigned mode, int count, unsigned type, const void* idx,
+                                             int inst, unsigned bi) {
+    bi_sv s; bi_shift(bi, &s);
+    DP(glDrawElementsInstanced, P_dei0)(mode, count, type, idx, inst);
+    bi_restore(&s);
+}
+GLC void glDrawElementsInstancedBaseVertexBaseInstance(unsigned mode, int count, unsigned type, const void* idx,
+                                                       int inst, int bv, unsigned bi) {
+    bi_sv s; bi_shift(bi, &s);
+    DP(glDrawElementsInstancedBaseVertex, P_deibv0)(mode, count, type, idx, inst, bv);
+    bi_restore(&s);
+}
+
+typedef void (*F_drawbufs)(int, const unsigned*);
+
+GLC void glDrawBuffers(int n, const unsigned* b) {
+    int fb = 0, mx = 4;
+    RP(glGetIntegerv, F_geti)(0x8CA6, &fb);
+    RP(glGetIntegerv, F_geti)(0x8824, &mx);
+    unsigned def = shim_x11_default_fbo();
+    int is_def = (!fb || (def && (unsigned)fb == def));
+    unsigned t[16];
+    if (n > mx) n = mx;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) {
+        unsigned m = b[i];
+        if (is_def && (m == 0x0405 || m == 0x0404 || m == 0x0400 || m == 0x0401))
+            m = 0x8CE0;
+        t[i] = m;
+    }
+    RP(glDrawBuffers, F_drawbufs)(n, t);
+}
+
+      
 #include "gl_extmem.c"
 #include "gl_es_alias.c"

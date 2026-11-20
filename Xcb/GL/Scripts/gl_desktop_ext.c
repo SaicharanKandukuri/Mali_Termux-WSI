@@ -201,8 +201,8 @@ GLC void glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f,
     unsigned char* rgb = NULL;
     dx_unpack unpack = { 0 };
 
-    /* Quake supplies RGBA bytes for RGB storage; GLES1 requires matching formats. */
-    if (i == 3 && f == 0x1908 && ty == 0x1401 && emu_ver() == 1 &&
+    /* Both legacy 3 and GL_RGB request RGB storage; GLES1 needs matching source bytes. */
+    if ((i == 3 || i == 0x1907) && f == 0x1908 && ty == 0x1401 && emu_ver() == 1 &&
         t == 0x0DE1 && l >= 0 && l < 31 && b == 0 && w >= 0 && h >= 0) {
         int max = 0;
         RP(glGetIntegerv, F_geti)(0x0D33, &max);          /* GL_MAX_TEXTURE_SIZE */

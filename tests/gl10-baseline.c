@@ -83,6 +83,12 @@ static int component_textures(void)
         ok &= sample("RGB from RGBA, opaque", 64, 64,
                      solid[8*row], solid[8*row+1], solid[8*row+2]);
     }
+    /* Lightmaps use the named RGB internal format for the same padded RGBA input. */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, solid);
+    ok &= errors("named RGB from RGBA upload");
+    glClear(GL_COLOR_BUFFER_BIT);
+    triangle_z(0);
+    ok &= sample("named RGB from RGBA second row", 64, 64, 17, 197, 41);
     /* Storage-only uploads must not read a null client pointer. */
     glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     ok &= errors("RGB storage without data");

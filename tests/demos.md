@@ -184,3 +184,9 @@ record zen-oa
 
 After a few seconds, use `stoprecord`, then `demo zen-oa` to replay the match.
 The recording is in `$D/oa/profile/baseoa/demos/`.
+
+If the HUD appears but the room is white, check the named RGB upload in
+the GL 1.0 baseline. With only the array-element fix, this build of ioquake3
+entered the map but ZenFox still rejected RGBA bytes for `GL_RGB` storage.
+Accepting the named format as well as numeric `3` restored the textures on
+the M31 without changing the game or its graphics settings.

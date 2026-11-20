@@ -126,3 +126,51 @@ for the video mode, ARM renderer and `Playing demo from demo1.dem`. For the
 [water regression](quake-water.md), keep warp mipmaps enabled and check the
 same surface in E1M3. To measure throughput instead of showing normal playback,
 replace `+playdemo demo1` with `+timedemo demo1`.
+
+## OpenArena 0.8.8 (ioquake3 desktop GL 1.1)
+
+Check the current blocker before downloading the game. From the setup above:
+
+```sh
+clang -std=c99 -Wall -Wextra -Werror "$W/tests/gl11-array-element.c" \
+  $(sdl2-config --cflags --libs) -L"$W/build" -lGL -ldl -o "$D/array-element"
+zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" "$D/array-element"
+# Optional on-device reference if Termux Mesa is installed:
+env -u LD_LIBRARY_PATH -u GLX_ES LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEODRIVER=x11 \
+  SDL_VIDEO_GL_DRIVER="$PREFIX/lib/libGL.so.1" "$D/array-element"
+```
+
+On the M31 at `671570c`, both drivers drew the indexed strip with
+`glDrawElements`. Mesa (llvmpipe) also drew it with `glArrayElement`.
+ZenFox reported desktop GL 1.5 but the function was absent from SDL, GLX,
+and the library exports. Exit 0 means the SDL entry produced the expected
+samples, 1 means lookup or drawing failed, and 2 means setup or the control
+failed. This is a GL 1.1 check, separate from the GL 1.0 baseline.
+
+To reproduce with the unmodified engine, build only the classic renderer
+and use the OpenArena data (no retail Quake III files needed):
+
+```sh
+mkdir -p "$D/oa" && cd "$D/oa"
+git clone https://github.com/ioquake/ioq3.git && cd ioq3
+git checkout --detach e505e34d79d40585a5e2731c459404aefb0b2d1b
+SDL_CFLAGS="$(sdl2-config --cflags)" SDL_LIBS="$(sdl2-config --libs)" \
+  make -j4 CC=clang PLATFORM=linux ARCH=arm64 USE_LOCAL_HEADERS=0 BUILD_STANDALONE=1 \
+  BUILD_SERVER=0 BUILD_RENDERER_OPENGL2=0 BUILD_GAME_SO=0 BUILD_GAME_QVM=0 \
+  BUILD_BASEGAME=0 BUILD_MISSIONPACK=0 USE_MUMBLE=0 USE_OPENAL=0 USE_CURL=0 \
+  USE_VOIP=0 USE_CODEC_OPUS=0
+cd "$D/oa"
+curl -fL https://downloads.sourceforge.net/project/oarena/openarena-0.8.8.zip -o oa.zip
+echo '5a8faf7f5b51f351b0a1618c06b6b98a5f1a6758f1d39818de2c87df2a0bac4a  oa.zip' | sha256sum -c - &&
+  bsdtar -xf oa.zip 'openarena-0.8.8/baseoa/*.pk3'
+cd ioq3/build/release-linux-arm64
+zen env SDL_VIDEODRIVER=x11 SDL_VIDEO_GL_DRIVER="$R/libGL.so.1" ./ioquake3.arm64 \
+  +set com_basegame baseoa +set fs_basepath "$D/oa/openarena-0.8.8" \
+  +set fs_homepath "$D/oa/profile" +set cl_renderer opengl1 +set r_fullscreen 1 \
+  +set r_mode -2 +set r_ignorehwgamma 1 +set s_initsound 0 +set net_enabled 0 \
+  +set bot_minplayers 3 +map oa_dm1
+```
+
+The M31 loaded all nine PK3s and selected X11, then
+[ioquake3's required-function check](https://github.com/ioquake/ioq3/blob/e505e34d79d40585a5e2731c459404aefb0b2d1b/code/sdl/sdl_glimp.c#L262-L323)
+stopped before the map loaded. Do not count this as a rendered match.

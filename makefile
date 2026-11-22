@@ -91,6 +91,15 @@ EGL_OUT    := $(BUILD)/libEGL.so.1
 EGL_CFLAGS := -I$(EGL_DIR)/Include
 EGL_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
 
+# ---- SPIRV-Cross (GL_ARB_gl_spirv, API/GL/Scripts/gl_spirv.c) ----
+# Static archives from the system package; the order does not matter (start-group)
+# and --exclude-libs keeps the SPIRV-Cross symbols out of libGL.so.1's exports.
+# Dynamic alternative:  make gl SPV_LIBS=-lspirv-cross-c-shared
+SPV_LIBS ?= -Wl,--start-group \
+            -lspirv-cross-c -lspirv-cross-glsl -lspirv-cross-hlsl -lspirv-cross-msl \
+            -lspirv-cross-cpp -lspirv-cross-reflect -lspirv-cross-core \
+            -Wl,--end-group -Wl,--exclude-libs,ALL
+
 # ---- GL ----
 GL_DIR        := API/GL
 GL_SRC        := $(GL_DIR)/Scripts/glx_shim.c
@@ -102,10 +111,12 @@ GL_DEPS       := $(wildcard $(GL_DIR)/Scripts/*) $(wildcard $(GL_DIR)/Include/*)
                  $(GLES_DIR)/Scripts/libGLESv2_shim.c $(GLES_DEPS) src/bcdec/bcdec.h
 GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
                  -I$(GLES_DIR)/Scripts -I$(GLES_DIR)/Include -IAPI/EGL/Include \
-                 -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
+                 -Isrc/bcdec -I$(PREFIX)/include \
+                 -Wno-unused-function -Wno-misleading-indentation
 GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
-GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
+# SPV_LIBS comes before -lc++: the SPIRV-Cross archives need libc++ symbols
+GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL $(SPV_LIBS) -ldl -lpthread -lm -lc++
 
 .PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl clean
 

@@ -25,7 +25,7 @@
 /* Funcții noi adăugate pentru Dual-Source Blending și Pipeline Management */
 #define glBlendFunc                glx_ovr_glBlendFunc
 #define glBlendFuncSeparate        glx_ovr_glBlendFuncSeparate
-#define glBlendFunci               glx_ovr_glBlendFunci  /* <--- Adăugat aici */
+#define glBlendFunci               glx_ovr_glBlendFunci  
 #define glBlendEquation            glx_ovr_glBlendEquation
 #define glBlendEquationSeparate    glx_ovr_glBlendEquationSeparate
 #define glBlendColor               glx_ovr_glBlendColor
@@ -90,13 +90,17 @@
 #define glBindBufferBase           glx_ovr_glBindBufferBase
 #define glBindBufferRange          glx_ovr_glBindBufferRange
 #define glDrawBuffers              glx_ovr_glDrawBuffers
-#define glVertexPointer   glx_shim_glVertexPointer
-#define glColorPointer    glx_shim_glColorPointer
-#define glTexCoordPointer glx_shim_glTexCoordPointer
-#define glNormalPointer   glx_shim_glNormalPointer
+#define glVertexPointer   glx_ovr_glVertexPointer
+#define glColorPointer    glx_ovr_glColorPointer
+#define glTexCoordPointer glx_ovr_glTexCoordPointer
+#define glNormalPointer   glx_ovr_glNormalPointer
+#define glShaderBinary glx_ovr_glShaderBinary
+#define glBindBuffer glx_ovr_glBindBuffer
 
 #include "libGLESv2_shim.c"
 
+#undef glBindBuffer
+#undef glShaderBinary
 #undef glVertexPointer
 #undef glColorPointer
 #undef glTexCoordPointer

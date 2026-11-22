@@ -51,7 +51,7 @@ ARM Mali GPU, **without root** and **without Mesa/Zink**.
 | Library | Path | Output | Summary |
 |---|---|---|---|
 | Vulkan | `API/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
-| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.5 emulated on GLES |
+| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.6 emulated on GLES, SPIR-V via SPIRV-Cross |
 | GLFW | `API/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
 | GLU | `API/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
 | GLUT | `API/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
@@ -212,8 +212,10 @@ driver as the last link.
 Path: `API/GL`
 
 A `libGL.so.1` that provides GLX 1.4 on top of the EGL shim and emulates
-desktop OpenGL (1.x up to 4.5 core and 3.2 compat) over the GLES that Mali offers.
+desktop OpenGL (1.x up to 4.6 core and 3.2 compat) over the GLES that Mali offers.
 It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
+SPIR-V shaders (`GL_ARB_gl_spirv`, core in 4.6) are converted to GLSL ES with
+SPIRV-Cross.
 
 ### Layout
 
@@ -224,6 +226,16 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 - `Scripts/gl_es_emul.c` – version/extension strings, GLSL → GLSL ES
   translation, S3TC/RGTC/BPTC upload handling (GPU decode with CPU fallback),
   1D textures, misc. missing calls
+- `Scripts/gl_spirv.c` – `GL_ARB_gl_spirv`: `glShaderBinary` (SPIR-V format)
+  and `glSpecializeShader`, SPIR-V → GLSL ES 3.20 through the SPIRV-Cross C API
+- `Scripts/gl_dsa.c` – `ARB_direct_state_access` (GL 4.5): `glCreate*`,
+  `glNamed*`, `glTexture*`, `glVertexArray*` ... as bind → call → restore over
+  ES 3.2, plus `glGetQueryBufferObject*`
+- `Scripts/gl_gl46.c` – the rest of GL 4.5/4.6 that is not DSA:
+  `glMultiDraw{Arrays,Elements}IndirectCount`, `glPolygonOffsetClamp`,
+  `glTextureBarrier`, `glGetTextureSubImage`, `glGetnTexImage`,
+  `glGetnUniformdv`, and the `glBindBuffer` wrapper that tracks
+  `GL_PARAMETER_BUFFER`
 - `Scripts/gl_dt_bridge.cpp` – C++ bridge to `Include/gl_desktop_texture.h`:
   compute-shader decoding of BC1/BC2/BC3/BC6H/BC7 for compressed texture
   uploads. Compiled separately and linked into `libGL.so.1`
@@ -240,15 +252,24 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
 ### Dependencies
 
-    pkg install clang make libxcb libx11 libglvnd
+    pkg install clang make libxcb libx11 libglvnd spirv-cross
 
 Also needs `src/bcdec` (bundled, CPU decoder), `API/GLES/Include/gles_list.h`
 and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 (`clang++`) and `libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
 
+SPIRV-Cross must provide its C API (`spirv_cross/spirv_cross_c.h`) and either
+the static archives (`libspirv-cross-*.a`) or `libspirv-cross-c-shared.so`.
+It is linked into `libGL.so.1` and its symbols are not exported.
+
 ### Build
 
     make gl                # build/libGL.so.1 (also builds build/gl/gl_dt_bridge.o)
+
+SPIRV-Cross is linked statically by default (`SPV_LIBS` in the makefile). To
+link the shared library instead:
+
+    make gl SPV_LIBS=-lspirv-cross-c-shared
 
 ### Usage
 
@@ -259,13 +280,13 @@ and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 | Source (in priority order) | Result |
 |---|---|
 | `GLX_ES=1\|2\|3` | forced |
-| `GLX_GL` (e.g. `21`, `33`, `45`) | `<20` → ES1, `>=30` → ES3 |
+| `GLX_GL` (e.g. `21`, `33`, `46`) | `<20` → ES1, `>=30` → ES3 |
 | `glXCreateContextAttribsARB` | ES profile, or major 1 → ES1, major ≥3 → ES3 |
 | Imported symbols of the app | fixed-function only → ES1, shaders → ES2/3 |
 | Fallback | ES2 (`GLX_DEFAULT_ES=3` for ES3) |
 
 Fixed-function applications run on ES1; shader applications on ES3, with
-the reported version up to GL 4.5.
+the reported version up to GL 4.6.
 
 ### Environment variables
 
@@ -280,7 +301,7 @@ the reported version up to GL 4.5.
 | `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off` |
 | `GLX_DEBUG=1` | Log the auto ES detection |
 | `GLX_TRACE=1` | Log `glGetIntegerv`/`glGetStringi` queries on stdout |
-| `GLX_SHADER_DUMP=1` | Print shaders sent to Mali |
+| `GLX_SHADER_DUMP=1` | Print shaders sent to Mali (also the GLSL ES generated from SPIR-V) |
 | `GLX_DUMP_TEXT=1` | Save WebRender text shaders to `$TMPDIR` |
 | `GLX_DSB_DEBUG=1`, `GLX_DSB_TEST=1..5` | Dual-source blending debug / test modes |
 | `GLX_DRAWLOG=<n>\|text\|swap\|fb0` | Log unique draw-state signatures |
@@ -301,6 +322,19 @@ the reported version up to GL 4.5.
   `sampler2DRect`, `sampler1DArray`, `gl_ClipDistance` and dual-source
   outputs are rewritten. Shaders that fail on int→float conversions are
   recompiled with promoted literals.
+- **SPIR-V (`GL_ARB_gl_spirv`):** `glShaderBinary` with
+  `GL_SHADER_BINARY_FORMAT_SPIR_V` stores the module; `glSpecializeShader`
+  converts it to GLSL ES 3.20 with SPIRV-Cross (separate textures and samplers
+  are combined, descriptor sets are stripped, specialization constants are
+  applied) and compiles it on Mali. The stage comes from the shader object.
+  Other binary formats go to the driver. If the conversion fails the shader
+  simply fails to compile and the reason is printed on stderr.
+- **GL 4.5 / 4.6:** `ARB_direct_state_access` is emulated by binding the
+  object, calling the ES function and restoring the binding; texture targets
+  are tracked from `glCreateTextures` and `glBindTexture`.
+  `glMultiDraw*IndirectCount` reads the count from the parameter buffer on the
+  CPU and loops over `glDraw*Indirect`; `GL_PARAMETER_BUFFER` is tracked by the
+  shim because ES cannot bind it.
 - **Textures:** uploads of BC1 with alpha, BC2, BC3 (S3TC) and BC6H, BC7
   (BPTC) are decoded on the GPU by compute shaders (ES 3.1+ contexts):
   the blocks go to an SSBO, are decoded into a temporary RGBA8 / SRGB8_A8 /
@@ -328,6 +362,23 @@ the reported version up to GL 4.5.
   GPU path creates a temporary texture and buffer per upload. The 2D upload
   path is covered by tests; sub-image, 3D/array and PBO uploads use the same
   code but are less tested. Use `GLX_NO_GPU_BC=1` to compare with the CPU path.
+- SPIR-V: specialization constants are passed as raw 32-bit values, no
+  SPIR-V extensions are reported (`GL_NUM_SPIR_V_EXTENSIONS` is 0), and
+  features that GLSL ES 3.20 lacks (for example `double`) cannot be converted.
+- GL 4.5/4.6 gaps: `glPolygonOffsetClamp` ignores the clamp value; indirect
+  draws need `baseInstance` = 0 in the commands (an ES limit); 
+  `glGetTextureSubImage` only reads RGBA with `UNSIGNED_BYTE` or `FLOAT`;
+  `glGetCompressedTexImage`, `glGetCompressedTextureImage` and
+  `glGetCompressedTextureSubImage` do nothing (ES cannot read back compressed
+  data); `glTextureBarrier` is a memory barrier; the `GL_QUERY_BUFFER` binding
+  is not emulated.
+- Advertised only: `GL_ARB_cull_distance`, `GL_ARB_derivative_control`,
+  `GL_ARB_shader_group_vote`, `GL_ARB_shader_atomic_counter_ops`,
+  `GL_ARB_pipeline_statistics_query`, `GL_ARB_transform_feedback_overflow_query`,
+  `GL_ARB_conditional_render_inverted` and `GL_KHR_no_error` are listed so that
+  GL 4.5/4.6 feature checks (for example `glewinfo`) pass, but they have no
+  real implementation. Hide them with `GLX_HIDE_EXT` if an application
+  misbehaves.
 - Do not load this together with `libGLESv2.so.2` in the same process.
 
 ## GLFW
@@ -485,9 +536,9 @@ any X server (Termux:X11) with a GLX-capable `libGL`.
 ## Roadmap
 
 - Adding supports display for Wayland and Win32.
-- adding OpenGL 4.6
 - fixing issues on blender crashing without clue
-- adding translate GLSL with GLSL ES
+- real implementations for the OpenGL 4.6 extensions that are only advertised
+  today (see the OpenGL limitations)
 - and much more!
 
 ## Notes from Arm engineers
@@ -933,3 +984,6 @@ VA-API applications (mpv, ffmpeg, ...) use the phone's hardware decoder.
 - `src/bcdec` – [bcdec](https://github.com/iOrange/bcdec) by iOrange, BC1-BC7
   texture decoder, used by the OpenGL shim for S3TC/RGTC/BPTC decoding.
   Dual-licensed: MIT or Public Domain/Unlicense (see `src/bcdec/LICENSE`).
+- [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) – not bundled;
+  linked from the system package by the OpenGL shim for SPIR-V → GLSL ES
+  conversion. See its repository for the license.

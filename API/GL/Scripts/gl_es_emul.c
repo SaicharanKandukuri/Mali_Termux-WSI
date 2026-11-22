@@ -1,7 +1,7 @@
 /*
  * gl_es_emul.c - included by glx_shim.c AFTER gl_compat.c.
  *   glGetString / glGetStringi / glGetIntegerv : ES1 -> "1.5 (...)", ES2 -> "2.1 (...)" + GLSL 1.20,
- *                                                ES3 -> "3.2 (Core Profile) (...)" or "4.3 (Core Profile) (...)"
+ *                                                ES3 -> "3.2 (Core Profile) (...)" or "4.6 (Core Profile) (...)"
  *   glShaderSource (ES2/ES3 ctx):
  *       GLSL 1.30-1.50/4.30 -> GLSL ES 3.20 (in/out, texture(), layout...)
  *       GLSL 1.10/1.20 (or no #version) -> GLSL ES 1.00 (attribute/varying/gl_FragColor/texture2D)
@@ -39,7 +39,7 @@ static inline int gl_emul_debug_enabled(void) {
 static int emu_ver(void) { return (T_glx.ctx && !T_glx.ctx->es_native) ? T_glx.ctx->ver : 0; }
 
 /* ===== A) OpenGL 4.3 Spoofing Check ===== */
-static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43, 44, 45 };
+static const int gl_emu_valid[] = { 11, 12, 13, 14, 15, 20, 21, 30, 32, 33, 40, 41, 42, 43, 44, 45, 46 };
 #define GL_EMU_COMPAT_ES1  15      /* ES1 ctx -> "1.5" */
 #define GL_EMU_COMPAT_ES2  21      /* ES2 ctx -> "2.1" */
 #define GL_EMU_COMPAT_ES3  32
@@ -57,8 +57,8 @@ static int gl_emu_ver(void) {
     } else {
         int det = ae_detect();
         if (det == 1) want = 15;
-        else if (det == 2) want = 43;
-        else want = 43;
+        else if (det == 2) want = 46;
+        else want = 46;
     }
     
     if (want == 121) return 121;
@@ -72,7 +72,7 @@ static int gl_emu_ver(void) {
     if (envv <= 0) {
         /* compat: 2.0 .. 3.2 */
         if (pm == 2 && best > GL_EMU_COMPAT_ES3) best = GL_EMU_COMPAT_ES3;
-        /* core: 3.3 .. 4.3 (only if the underlying context is ES3) */
+        /* core: 3.3 .. 4.6 (only if the underlying context is ES3) */
         if (pm == 1 && ev >= 3 && best < 33) best = 33;
     }
 
@@ -111,6 +111,7 @@ static const char* gl_glsl_for(int g) {
         case 43:  return "4.30";
         case 44:  return "4.40";
         case 45:  return "4.50";
+        case 46:  return "4.60";
         default:  return "1.50"; 
     }
 }
@@ -140,11 +141,17 @@ static const char* const emu_arb3[] = {
     "GL_ARB_compute_shader", "GL_ARB_shader_storage_buffer_object", "GL_ARB_shader_image_load_store",
     "GL_ARB_shader_atomic_counters", "GL_ARB_program_interface_query", "GL_ARB_explicit_uniform_location",
     "GL_ARB_vertex_attrib_binding", "GL_ARB_framebuffer_no_attachments", "GL_ARB_texture_storage_multisample",
-    "GL_ARB_draw_indirect", "GL_ARB_ES3_1_compatibility", "GL_ARB_clear_buffer_object", "GL_ARB_direct_state_access", "GL_ARB_query_buffer_object",
+    "GL_ARB_draw_indirect", "GL_ARB_ES3_1_compatibility", "GL_ARB_clear_buffer_object", "GL_ARB_direct_state_access", "GL_ARB_query_buffer_object", "GL_ARB_gl_spirv", "GL_ARB_spirv_extensions",
+    "GL_ARB_conditional_render_inverted", "GL_ARB_cull_distance", "GL_ARB_derivative_control",
+    "GL_ARB_get_texture_sub_image", "GL_ARB_texture_barrier", "GL_KHR_context_flush_control",
+    "GL_KHR_robustness",
+    "GL_ARB_indirect_parameters", "GL_ARB_pipeline_statistics_query", "GL_ARB_polygon_offset_clamp",
+    "GL_ARB_shader_atomic_counter_ops", "GL_ARB_shader_group_vote",
+    "GL_ARB_texture_filter_anisotropic", "GL_ARB_transform_feedback_overflow_query", "GL_KHR_no_error",
 };
 
 #define EMU_ALL  ((int)(sizeof emu_arb3 / sizeof emu_arb3[0]))
-#define EMU_N3 (gl43() ? EMU_ALL : EMU_ALL - 14)
+#define EMU_N3 (gl43() ? EMU_ALL : EMU_ALL - 31)
 
 static const char emu_arb1[] =
     " GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_env_combine"
@@ -781,6 +788,10 @@ GLC void glGetIntegerv(unsigned pname, int* v) {
             return;
         }
 
+        case 0x8DF9: *v = 1;      return; /* NUM_SHADER_BINARY_FORMATS */
+        case 0x8DF8: v[0] = 0x9551; return; /* SHADER_BINARY_FORMATS */
+        case 0x9554: *v = 0;      return; /* NUM_SPIR_V_EXTENSIONS */
+
         /* Desktop GL fallback mocks for Mali GLES */
         case 0x8871: *v = 8;      return; /* GL_MAX_TEXTURE_COORDS */
         case 0x88A0: *v = 16;     return; /* GL_MAX_VERTEX_UNIFORM_BLOCKS */
@@ -1347,7 +1358,9 @@ char* r = xs_rewrite(body);
 
 #include "gl_litfix.c"
 #include "gl_ssbo.c"
+#include "gl_spirv.c"
 
+  
 static void cd_note(unsigned sh, int n);
 
 GLC void glShaderSource(unsigned sh, int n, const char* const* str, const int* len) {
@@ -2138,6 +2151,145 @@ GLC void glDrawBuffers(int n, const unsigned* b) {
         t[i] = m;
     }
     RP(glDrawBuffers, F_drawbufs)(n, t);
+}
+
+typedef void (*G46_ff)(float, float);
+typedef void (*G46_mb)(unsigned);
+typedef void (*G46_dai)(unsigned, const void*);
+typedef void (*G46_dei)(unsigned, unsigned, const void*);
+typedef void (*G46_bb)(unsigned, unsigned);
+typedef void (*G46_gnufv)(unsigned, int, int, float*);
+typedef void (*G46_fbl)(unsigned, unsigned, unsigned, int, int);
+
+/* GL_PARAMETER_BUFFER binding (ES cannot bind it, so we track it ourselves) */
+unsigned glx_param_buf;
+
+GLC void glBindBuffer(unsigned target, unsigned buf) {
+    if (target == 0x80EE) { glx_param_buf = buf; return; }      /* GL_PARAMETER_BUFFER */
+    RP(glBindBuffer, G46_bb)(target, buf);
+}
+
+/* ===== GL 4.6 ===== */
+
+GLC void glPolygonOffsetClamp(float factor, float units, float clamp) {
+    if (clamp != 0.0f && gl_emul_debug_enabled())
+        fprintf(stderr, "[gl_emul] glPolygonOffsetClamp: clamp=%g ignored\n", (double)clamp);
+    RP(glPolygonOffset, G46_ff)(factor, units);
+}
+
+/* Reads a uint from GL_PARAMETER_BUFFER at byte offset `off`. 1 = ok. */
+static int g46_read_count(long off, unsigned* n) {
+    int sv = 0, ok = 0;
+    if (!glx_param_buf) {
+        if (gl_emul_debug_enabled())
+            fprintf(stderr, "[gl_emul] MultiDraw*IndirectCount: no GL_PARAMETER_BUFFER bound\n");
+        return 0;
+    }
+    RP(glGetIntegerv, F_geti)(0x8F36, &sv);                      /* COPY_READ_BUFFER binding */
+    RP(glBindBuffer, G46_bb)(0x8F36, glx_param_buf);
+    const uint32_t* p = RP(glMapBufferRange, F_mapr)(0x8F36, off, 4, 0x0001);
+    if (p) { *n = *p; ok = 1; RP(glUnmapBuffer, F_unmap)(0x8F36); }
+    RP(glBindBuffer, G46_bb)(0x8F36, (unsigned)sv);
+    return ok;
+}
+
+GLC void glMultiDrawArraysIndirectCount(unsigned mode, const void* indirect, long drawcount,
+                                        int maxdraw, int stride) {
+    unsigned n = 0;
+    if (maxdraw <= 0 || !g46_read_count(drawcount, &n)) return;
+    if (n > (unsigned)maxdraw) n = (unsigned)maxdraw;
+    size_t st = stride ? (size_t)stride : 16;                    /* DrawArraysIndirectCommand */
+    for (unsigned i = 0; i < n; i++)
+        RP(glDrawArraysIndirect, G46_dai)(mode, (const char*)indirect + (size_t)i * st);
+}
+
+GLC void glMultiDrawElementsIndirectCount(unsigned mode, unsigned type, const void* indirect,
+                                          long drawcount, int maxdraw, int stride) {
+    unsigned n = 0;
+    if (maxdraw <= 0 || !g46_read_count(drawcount, &n)) return;
+    if (n > (unsigned)maxdraw) n = (unsigned)maxdraw;
+    size_t st = stride ? (size_t)stride : 20;                    /* DrawElementsIndirectCommand */
+    for (unsigned i = 0; i < n; i++)
+        RP(glDrawElementsIndirect, G46_dei)(mode, type, (const char*)indirect + (size_t)i * st);
+}
+
+/* ===== GL 4.5 ===== */
+
+GLC void glTextureBarrier(void) {
+    /* TEXTURE_FETCH_BARRIER_BIT | FRAMEBUFFER_BARRIER_BIT */
+    RP(glMemoryBarrier, G46_mb)(0x00000008u | 0x00000400u);
+}
+
+GLC void glGetnTexImage(unsigned target, int level, unsigned fmt, unsigned type, int bufSize, void* px) {
+    (void)bufSize;
+    glGetTexImage(target, level, fmt, type, px);
+}
+
+GLC void glGetnCompressedTexImage(unsigned target, int level, int bufSize, void* img) {
+    (void)bufSize;
+    glGetCompressedTexImage(target, level, img);
+}
+
+/* doubles are not supported on ES: read as float and widen */
+GLC void glGetnUniformdv(unsigned prog, int loc, int bufSize, double* p) {
+    int n = bufSize / 8;
+    if (n <= 0 || !p) return;
+    float* f = calloc((size_t)n, sizeof *f);
+    if (!f) return;
+    RP(glGetnUniformfv, G46_gnufv)(prog, loc, n * 4, f);
+    for (int i = 0; i < n; i++) p[i] = (double)f[i];
+    free(f);
+}
+
+/* RGBA8 / RGBA32F read-back through an FBO (2D, 3D and array textures) */
+GLC void glGetTextureSubImage(unsigned tex, int level, int xo, int yo, int zo,
+                              int w, int h, int d, unsigned fmt, unsigned type,
+                              int bufSize, void* px) {
+    (void)bufSize;
+    if (!tex || !px || w <= 0 || h <= 0 || d <= 0) return;
+    if (fmt != 0x1908 || (type != 0x1401 && type != 0x1406)) {
+        if (gl_emul_debug_enabled())
+            fprintf(stderr, "[gl_emul] glGetTextureSubImage: only RGBA/UNSIGNED_BYTE|FLOAT (got 0x%x/0x%x)\n", fmt, type);
+        return;
+    }
+    size_t slice = (size_t)w * (size_t)h * (type == 0x1406 ? 16u : 4u);
+    unsigned tg = (tex < DSA_MAXTEX && dsa_tt[tex]) ? dsa_tt[tex] : 0x0DE1;   /* from gl_dsa.c */
+
+    int rfb = 0, pack = 4;
+    RP(glGetIntegerv, F_geti)(0x8CAA, &rfb);
+    RP(glGetIntegerv, F_geti)(0x0D05, &pack);
+    RP(glPixelStorei, F_pstore)(0x0D05, 1);
+
+    unsigned fbo = 0;
+    RP(glGenFramebuffers, F_genfb)(1, &fbo);
+    glBindFramebuffer(0x8CA8, fbo);
+
+    for (int z = 0; z < d; z++) {
+        if (tg == 0x0DE1)                                   /* 2D */
+            RP(glFramebufferTexture2D, F_fbtex)(0x8CA8, 0x8CE0, 0x0DE1, tex, level);
+        else if (tg == 0x8513)                              /* cubemap: zo = face */
+            RP(glFramebufferTexture2D, F_fbtex)(0x8CA8, 0x8CE0, 0x8515 + (unsigned)(zo + z), tex, level);
+        else                                                /* 3D / 2D array */
+            RP(glFramebufferTextureLayer, G46_fbl)(0x8CA8, 0x8CE0, tex, level, zo + z);
+        if (RP(glCheckFramebufferStatus, F_chkfb)(0x8CA8) != 0x8CD5) {
+            if (gl_emul_debug_enabled())
+                fprintf(stderr, "[gl_emul] glGetTextureSubImage: incomplete FBO\n");
+            break;
+        }
+        RP(glReadPixels, F_rdpx)(xo, yo, w, h, fmt, type, (uint8_t*)px + (size_t)z * slice);
+    }
+
+    glBindFramebuffer(0x8CA8, (unsigned)rfb);
+    RP(glDeleteFramebuffers, F_delfb)(1, &fbo);
+    RP(glPixelStorei, F_pstore)(0x0D05, pack);
+}
+
+GLC void glGetCompressedTextureSubImage(unsigned tex, int level, int xo, int yo, int zo,
+                                        int w, int h, int d, int bufSize, void* px) {
+    (void)tex; (void)level; (void)xo; (void)yo; (void)zo; (void)w; (void)h; (void)d;
+    (void)bufSize; (void)px;
+    if (gl_emul_debug_enabled())
+        fprintf(stderr, "[gl_emul] glGetCompressedTextureSubImage is not supported on ES (ignored)\n");
 }
 
       

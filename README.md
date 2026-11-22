@@ -423,17 +423,21 @@ the reported version up to GL 4.6.
   the shim forces vsync on that surface to recover, so a very slow frame can
   silently turn a no-vsync setup back into a vsynced one.
 - Running without vsync can overload the whole device, not just the
-  application. Every presented frame goes to the X server (Termux:X11 on
-  Android) and from there to the Android compositor, so a heavy no-vsync
-  workload can make the X server, the compositor and the rest of the UI
-  stutter: laggy touch input, slow app switching, thermal throttling and, in
-  the worst case, a UI that stops responding until the application is killed.
+  application. Mailbox mode (`SHIM_MAILBOX=1`) with glmark2 at 1920x1080 and
+  the default sync mode froze the Termux:X11 UI until the process was
+  stopped with Ctrl+C. At 800x600 it only caused some stutter. With
+  `SHIM_SYNC=implicit` the same 1920x1080 test showed some stutter but the UI
+  stayed stable, so the sync mode matters as well as the resolution. The
+  exact bottleneck (GPU, X server or compositor) was not identified, and
+  other devices or drivers may behave differently.
   The shim bounds the number of frames in flight (`SHIM_BUFFERS`, 4 by default,
   8 at most), but the bound is not absolute: if the server stops sending
-  `IDLE_NOTIFY` events, the shim gives up waiting after 300 ms and presents
-  without waiting for free buffers. Prefer vsync on for unattended or
-  untested applications, and use `SHIM_STATS=1` to check the real
-  presented/dropped rates before leaving a no-vsync setup running.
+  `IDLE_NOTIFY` events, the shim stops waiting after 300 ms and presents
+  without waiting for free buffers. Keep vsync on for heavy or untested
+  applications, especially at high resolutions, try `SHIM_SYNC=implicit` if
+  no-vsync freezes the UI, and check the real presented/dropped rates with
+  `SHIM_STATS=1`. If the UI freezes, stop the application from a terminal
+  (Ctrl+C or `kill`).
   
 ## GLFW
 

@@ -298,7 +298,8 @@ the reported version up to GL 4.6.
 | `GLX_HIDE_EXT="A,B"` | Hide extensions from the application |
 | `GLX_NO_GPU_BC=1` | Disable GPU BC decoding, use the CPU decoder (bcdec) for all formats |
 | `GLX_NO_LITFIX=1` | Disable the int→float literal repair |
-| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off` |
+| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off`, and every 5 s the `GLX_EXT_texture_from_pixmap` bind statistics (binds, sub/full uploads, MB, average ms) |
+| `vblank_mode=0` | Mesa-compatible: start windows with swap interval 0 (no vsync, tearing possible). The application can still change it with `glXSwapInterval*` |
 | `GLX_DEBUG=1` | Log the auto ES detection |
 | `GLX_TRACE=1` | Log `glGetIntegerv`/`glGetStringi` queries on stdout |
 | `GLX_SHADER_DUMP=1` | Print shaders sent to Mali (also the GLSL ES generated from SPIR-V) |
@@ -380,7 +381,60 @@ the reported version up to GL 4.6.
   real implementation. Hide them with `GLX_HIDE_EXT` if an application
   misbehaves.
 - Do not load this together with `libGLESv2.so.2` in the same process.
-
+- `GLX_EXT_texture_from_pixmap`: Mali has no `EGL_KHR_image_pixmap`, so
+  `glXBindTexImageEXT` reads the X pixmap back with `xcb_get_image` and
+  uploads it with `glTexImage2D` (a copy on every bind, not zero-copy).
+  Only `GL_TEXTURE_2D` is supported: no `GL_TEXTURE_RECTANGLE` or 1D targets,
+  no mipmapped pixmaps (`GLX_BIND_TO_MIPMAP_TEXTURE_EXT` is 0) and no
+  `GLX_FRONT_RIGHT/BACK/AUX` buffers. Rendering to a GLX pixmap while it is
+  bound is not reflected until the next bind.
+- GLX pixmaps are EGL pbuffers copied back to the X pixmap with `xcb_put_image`
+  on `glFlush`/`glFinish`/`glXWaitGL`/`glXSwapBuffers`/context switch.
+  This is slow for large pixmaps and not suited to per-frame use.
+- `GLX_EXT_buffer_age` is reported only on the dmabuf present path (age 1,
+  since the swap acts as a copy). The legacy WSI fallback, pixmaps and
+  pbuffers report 0, so applications redraw the whole frame. Querying a
+  drawable that is not current returns 0 instead of raising `GLXBadDrawable`.
+- `GLX_EXT_swap_control_tear` is advertised but adaptive vsync does not exist:
+  a negative interval behaves as plain vsync. The swap interval applies to the
+  current surface, not to the drawable passed to `glXSwapIntervalEXT`, so call
+  it with the context current. `GLX_MAX_SWAP_INTERVAL_EXT` is a nominal value;
+  intervals above 1 behave as 1.
+- `GLX_SGIX_fbconfig` entry points are aliases of the GLX 1.3 ones.
+  `GLX_ARB_create_context_no_error` and `GLX_ARB_context_flush_control` are
+  advertised only; their attributes are ignored.
+- GLX always exposes one visual (the root visual, or a 32-bit ARGB one) and
+  one screen. `glXCopyContext` and `glXSelectEvent` are no-ops, and
+  `GLX_DRAWABLE_TYPE` always reports window, pixmap and pbuffer, even for
+  configs that lack `EGL_PBUFFER_BIT`.
+- Mailbox / no-vsync presenting (`SHIM_MAILBOX=1`, or swap interval 0 with
+  `EGL_SWAP_TEARING_HINT_VSYNC_EXT`) does not limit the frame rate by itself.
+  The application keeps rendering as fast as the GPU allows, and every frame
+  still costs a GPU blit and a fence wait. Frames are only dropped when all
+  present buffers are still busy, so if the display or the X server cannot
+  consume frames that fast, most of the work is wasted and CPU/GPU load,
+  heat and battery use stay high. The FPS shown by the application counts
+  `glXSwapBuffers` calls, including dropped frames, so it can be much higher
+  than what reaches the screen. Use `SHIM_STATS=1` to see the real
+  presented/dropped counts. Cap the frame rate in the application, or keep
+  vsync on, for anything heavy. Swap interval 0 without mailbox presents
+  asynchronously and can tear.
+- If a swap or fence wait takes longer than `SHIM_STALL_MS` (default 250 ms),
+  the shim forces vsync on that surface to recover, so a very slow frame can
+  silently turn a no-vsync setup back into a vsynced one.
+- Running without vsync can overload the whole device, not just the
+  application. Every presented frame goes to the X server (Termux:X11 on
+  Android) and from there to the Android compositor, so a heavy no-vsync
+  workload can make the X server, the compositor and the rest of the UI
+  stutter: laggy touch input, slow app switching, thermal throttling and, in
+  the worst case, a UI that stops responding until the application is killed.
+  The shim bounds the number of frames in flight (`SHIM_BUFFERS`, 4 by default,
+  8 at most), but the bound is not absolute: if the server stops sending
+  `IDLE_NOTIFY` events, the shim gives up waiting after 300 ms and presents
+  without waiting for free buffers. Prefer vsync on for unattended or
+  untested applications, and use `SHIM_STATS=1` to check the real
+  presented/dropped rates before leaving a no-vsync setup running.
+  
 ## GLFW
 
 Path: `API/GL/GLFW`

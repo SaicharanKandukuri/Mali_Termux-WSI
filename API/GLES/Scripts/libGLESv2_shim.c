@@ -10,7 +10,7 @@
  *       SHIM_W / SHIM_H (default 1280x720) | SHIM_REAL_SWAP=1 (also call real eglSwapBuffers)
  */
 #define _GNU_SOURCE
-#include "mali_sphal.h"
+#include "../Include/mali_sphal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -166,19 +166,106 @@ static xcb_special_event_t* g_se;
 
 /* 1. Internal pointer table to real Mali driver */
 #define X(n) HIDDEN void* p_##n;
-#include "gles_list.h"
+#include "../Include/gles_list.h"
 #undef X
 
-/* 2. Bare-metal AArch64 trampolines */
-#define X(n)                                              \
-    EXPORT __attribute__((naked)) void n(void) {          \
-        __asm__ volatile(                                 \
-            "adrp x16, p_" #n "\n\t"                      \
-            "ldr  x16, [x16, #:lo12:p_" #n "]\n\t"        \
-            "br   x16\n");                                \
+#include <signal.h>
+
+HIDDEN const char* gl_last_fn;
+HIDDEN int gl_trace_flag;
+
+/* Called by a trampoline whose Mali target is NULL */
+HIDDEN long gl_null_call(const char* n) {
+    static int cnt;
+    if (cnt < 64) {
+        cnt++;
+        fprintf(stderr, "[gles-shim] MISSING driver function called: %s (ignored, returns 0)\n", n);
     }
-#include "gles_list.h"
+    return 0;
+}
+
+static long gl_rp_dummy(void) { return 0; }
+HIDDEN void* gl_rp_missing(const char* n) {
+    static int cnt;
+    if (cnt < 64) {
+        cnt++;
+        fprintf(stderr, "[gles-shim] MISSING driver function (wrapper): %s (ignored, returns 0)\n", n);
+    }
+    return (void*)gl_rp_dummy;
+}
+
+/* 2. AArch64 trampolines: optional last-call tracking; NULL target -> log + return 0 */
+#define X(n)                                                  \
+    EXPORT __attribute__((naked)) void n(void) {              \
+        __asm__ volatile(                                     \
+            "adrp x16, gl_trace_flag\n\t"                     \
+            "ldr  w17, [x16, #:lo12:gl_trace_flag]\n\t"       \
+            "cbz  w17, 2f\n\t"                                \
+            "adrp x17, .Lnm_" #n "\n\t"                       \
+            "add  x17, x17, #:lo12:.Lnm_" #n "\n\t"           \
+            "adrp x16, gl_last_fn\n\t"                        \
+            "str  x17, [x16, #:lo12:gl_last_fn]\n"            \
+            "2:\n\t"                                          \
+            "adrp x16, p_" #n "\n\t"                          \
+            "ldr  x16, [x16, #:lo12:p_" #n "]\n\t"            \
+            "cbz  x16, 1f\n\t"                                \
+            "br   x16\n"                                      \
+            "1:\n\t"                                          \
+            "adrp x0, .Lnm_" #n "\n\t"                        \
+            "add  x0, x0, #:lo12:.Lnm_" #n "\n\t"             \
+            "b    gl_null_call\n\t"                           \
+            ".pushsection .rodata,\"a\"\n"                    \
+            ".Lnm_" #n ": .asciz \"" #n "\"\n"                \
+            ".popsection\n");                                 \
+    }
+#include "../Include/gles_list.h"
 #undef X
+
+/* ---- crash handler: prints the last traced GL call, then chains to the previous handler ---- */
+static struct sigaction gl_old_sa[2];
+static const int gl_crash_sigs[2] = { SIGSEGV, SIGBUS };
+
+#include <ucontext.h>
+#include <sys/syscall.h>
+
+static void gl_crash_h(int sig, siginfo_t* si, void* vuc) {
+    ucontext_t* uc = (ucontext_t*)vuc;
+    unsigned long pc = uc->uc_mcontext.pc, lr = uc->uc_mcontext.regs[30], sp = uc->uc_mcontext.sp;
+    char buf[512];
+    Dl_info di; const char* mod = "?"; unsigned long off = 0;
+    if (dladdr((void*)lr, &di) && di.dli_fname) { mod = di.dli_fname; off = lr - (unsigned long)di.dli_fbase; }
+    int n = snprintf(buf, sizeof buf,
+        "\n[gles-shim] CRASH sig=%d tid=%ld fault_addr=%p\n"
+        "[gles-shim]   pc=0x%lx lr=0x%lx sp=0x%lx\n"
+        "[gles-shim]   lr in %s +0x%lx\n"
+        "[gles-shim]   last GL call (any thread) = %s\n",
+        sig, (long)syscall(SYS_gettid), si->si_addr, pc, lr, sp, mod, off,
+        gl_last_fn ? gl_last_fn : "(none traced)");
+    (void)!write(2, buf, (size_t)n);
+    int i = (sig == SIGBUS);
+    struct sigaction* o = &gl_old_sa[i];
+    if ((o->sa_flags & SA_SIGINFO) && o->sa_sigaction) { o->sa_sigaction(sig, si, vuc); return; }
+    if (o->sa_handler != SIG_DFL && o->sa_handler != SIG_IGN) { o->sa_handler(sig); return; }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+/* Blender installs its own handler after our constructor, so this is called again from glXMakeContextCurrent */
+HIDDEN void gl_crash_install(void) {
+    if (!gl_trace_flag) return;
+    for (int i = 0; i < 2; i++) {
+        struct sigaction cur;
+        sigaction(gl_crash_sigs[i], NULL, &cur);
+        if ((cur.sa_flags & SA_SIGINFO) && cur.sa_sigaction == gl_crash_h) continue;
+        gl_old_sa[i] = cur;
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_sigaction = gl_crash_h;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigemptyset(&sa.sa_mask);
+        sigaction(gl_crash_sigs[i], &sa, NULL);
+    }
+}
 
 static void (*real_bind)(unsigned, unsigned);
 static void (*real_bind_oes)(unsigned, unsigned);
@@ -890,7 +977,7 @@ static void gles_shim_init(void) {
     if (!G_mali) return;
 
 #define X(n) p_##n = dlsym(G_mali, #n);
-#include "gles_list.h"
+#include "../Include/gles_list.h"
 #undef X
 
     *(void**)&real_bind         = dlsym(G_mali, "glBindFramebuffer");
@@ -901,6 +988,7 @@ static void gles_shim_init(void) {
     *(void**)&m_eglGetCurrentDisplay = dlsym(G_mali, "eglGetCurrentDisplay");
     *(void**)&m_eglCreateImageKHR    = dlsym(G_mali, "eglCreateImageKHR");
     *(void**)&m_eglDestroyImageKHR   = dlsym(G_mali, "eglDestroyImageKHR");
+    { const char* t = getenv("GLX_LASTFN"); gl_trace_flag = t && atoi(t); gl_crash_install(); }
 }
 
 /* ---------- Exports ---------- */

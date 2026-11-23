@@ -1,17 +1,16 @@
 /*
- * gl_dsa.c - ARB_direct_state_access (4.5) emulat peste GLES 3.2: bind -> apel -> restore.
- * Include in gl_es_emul.c INAINTE de gl_extmem.c (acesta foloseste dsa_in/dsa_out/dsa_note)
- * si dupa sectiunea N (tfo_cur) a fisierului. INLOCUIESTE blocul DSA din mesajul anterior
- * (glCreateTextures, glTextureStorage*, dsa_* ) - nu pastra ambele.
+ * gl_dsa.c - ARB_direct_state_access (4.5) emulated over GLES 3.2: bind -> call -> restore.
+ * Include in gl_es_emul.c BEFORE gl_extmem.c (as it uses dsa_in/dsa_out/dsa_note)
+ * and AFTER section N (tfo_cur) of the file.
  *
- * Hook obligatoriu: in wrapper-ul tau glBindTexture adauga  dsa_note(tex, target);
- * (altfel texturile create cu glGenTextures nu au target cunoscut; implicit: 2D / 3D dupa functie)
+ * Mandatory hook: in your glBindTexture wrapper, add dsa_note(tex, target);
+ * (otherwise textures created with glGenTextures won't have a known target; default: 2D / 3D based on function)
  *
- * Nu acopera: glGetCompressedTextureImage, glTextureView, program pipelines, glTextureBarrier.
+ * Does not cover: glGetCompressedTextureImage, glTextureView, program pipelines, glTextureBarrier.
  */
 
-#define DP(n, T)      ({ static T p_; if (!p_) p_ = (T)cs_gp(#n); p_; })
-#define DP2(a, b, T)  ({ static T p_; if (!p_) { p_ = (T)cs_gp(#a); if (!p_) p_ = (T)cs_gp(#b); } p_; })
+#define DP(n, T)      ({ static T p_; if (!p_) p_ = (T)cs_gp(#n); p_ ? p_ : (T)gl_rp_missing(#n); })
+#define DP2(a, b, T)  ({ static T p_; if (!p_) { p_ = (T)cs_gp(#a); if (!p_) p_ = (T)cs_gp(#b); } p_ ? p_ : (T)gl_rp_missing(#a); })
 
 typedef void (*D_gen)(int, unsigned*);
 typedef void (*D_ts2)(unsigned, int, unsigned, int, int);
@@ -49,9 +48,10 @@ typedef void (*D_bbb)(unsigned, unsigned, unsigned);
 typedef void (*D_bbr)(unsigned, unsigned, unsigned, long, long);
 typedef void (*D_bsm)(unsigned, unsigned);
 
-/* ---------- Texturi: tabel nume -> target ---------- */
+/* ---------- Textures: name -> target tables ---------- */
 #define DSA_MAXTEX 65536
 static unsigned short dsa_tt[DSA_MAXTEX];
+static unsigned short dsa_ot[DSA_MAXTEX];     /* original target, for TEXTURE_TARGET */
 
 static unsigned dsa_tgt(unsigned t) {
     t = t1d(t);
@@ -60,9 +60,15 @@ static unsigned dsa_tgt(unsigned t) {
     return t;
 }
 static void dsa_note(unsigned tex, unsigned tgt) {
-    if (tex && tex < DSA_MAXTEX && tgt) dsa_tt[tex] = (unsigned short)dsa_tgt(tgt);
+    if (tex && tex < DSA_MAXTEX && tgt) {
+        dsa_tt[tex] = (unsigned short)dsa_tgt(tgt);
+        dsa_ot[tex] = (unsigned short)tgt;
+    }
 }
-static unsigned dsa_bq(unsigned t) {              /* target -> enum de binding */
+static int dsa_target_of(unsigned tex) {
+    return (tex < DSA_MAXTEX && dsa_ot[tex]) ? dsa_ot[tex] : 0x0DE1;
+}
+static unsigned dsa_bq(unsigned t) {              /* target -> binding enum */
     switch (t) {
     case 0x806F: return 0x806A;  case 0x8C1A: return 0x8C1D;  case 0x8513: return 0x8514;
     case 0x9009: return 0x900A;  case 0x9100: return 0x9104;  case 0x9102: return 0x9105;
@@ -85,17 +91,17 @@ GLC void glCreateTextures(unsigned target, int n, unsigned* t) {
     unsigned tg = dsa_tgt(target);
     DP(glGenTextures, D_gen)(n, t);
     int old = 0; DP(glGetIntegerv, F_geti)(dsa_bq(tg), &old);
-    for (int i = 0; i < n; i++) { DP(glBindTexture, M_bt)(tg, t[i]); dsa_note(t[i], tg); }
+    for (int i = 0; i < n; i++) { DP(glBindTexture, M_bt)(tg, t[i]); dsa_note(t[i], target); }
     DP(glBindTexture, M_bt)(tg, (unsigned)old);
 }
 
-/* ---------- Texturi: storage ---------- */
+/* ---------- Textures: storage ---------- */
 GLC void glTextureStorage1D(unsigned tex, int lv, unsigned f, int w) {
     dsa_b b = dsa_in(tex, 0x0DE1); DP(glTexStorage2D, D_ts2)(0x0DE1, lv, f, w, 1); dsa_out(b);
 }
 GLC void glTextureStorage2D(unsigned tex, int lv, unsigned f, int w, int h) {
     dsa_b b = dsa_in(tex, 0x0DE1);
-    if (b.tgt == 0x8C1A) DP(glTexStorage3D, D_ts3)(0x8C1A, lv, f, w, 1, h);   /* 1D array emulat */
+    if (b.tgt == 0x8C1A) DP(glTexStorage3D, D_ts3)(0x8C1A, lv, f, w, 1, h);   /* emulated 1D array */
     else                 DP(glTexStorage2D, D_ts2)(b.tgt, lv, f, w, h);
     dsa_out(b);
 }
@@ -110,7 +116,7 @@ GLC void glTextureStorage3DMultisample(unsigned tex, int s, unsigned f, int w, i
     DP2(glTexStorage3DMultisample, glTexStorage3DMultisampleOES, L_tsm3)(b.tgt, s, f, w, h, d, fx);
     dsa_out(b);
 }
-/* variantele EXT (cu parametru <target>) */
+/* EXT variants (with <target> parameter) */
 GLC void glTextureStorage1DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w)
     { (void)tgt; dsa_note(tex, 0x0DE1); glTextureStorage1D(tex, lv, f, w); }
 GLC void glTextureStorage2DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w, int h)
@@ -118,7 +124,7 @@ GLC void glTextureStorage2DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, i
 GLC void glTextureStorage3DEXT(unsigned tex, unsigned tgt, int lv, unsigned f, int w, int h, int d)
     { dsa_note(tex, tgt); glTextureStorage3D(tex, lv, f, w, h, d); }
 
-/* ---------- Texturi: upload / copy / mipmap / parametri ---------- */
+/* ---------- Textures: upload / copy / mipmap / parameters ---------- */
 GLC void glTextureSubImage1D(unsigned tex, int lv, int xo, int w, unsigned f, unsigned ty, const void* px) {
     dsa_b b = dsa_in(tex, 0x0DE1);
     DP(glTexSubImage2D, F_teximg)(0x0DE1, lv, xo, 0, w, 1, f, ty, px);
@@ -132,9 +138,9 @@ GLC void glTextureSubImage2D(unsigned tex, int lv, int xo, int yo, int w, int h,
 GLC void glTextureSubImage3D(unsigned tex, int lv, int xo, int yo, int zo, int w, int h, int d,
                              unsigned f, unsigned ty, const void* px) {
     dsa_b b = dsa_in(tex, 0x806F);
-    if (b.tgt == 0x8513) {                                   /* cubemap: zo = fata */
+    if (b.tgt == 0x8513) {                                   /* cubemap: zo = face */
         if (d == 1) DP(glTexSubImage2D, F_teximg)(0x8515 + (unsigned)zo, lv, xo, yo, w, h, f, ty, px);
-        else if (gl_emul_debug_enabled()) fprintf(stderr, "[dsa] glTextureSubImage3D cubemap cu depth>1 nesuportat\n");
+        else if (gl_emul_debug_enabled()) fprintf(stderr, "[dsa] glTextureSubImage3D cubemap with depth>1 unsupported\n");
     } else DP(glTexSubImage3D, F_tsi3)(b.tgt, lv, xo, yo, zo, w, h, d, f, ty, px);
     dsa_out(b);
 }
@@ -180,12 +186,20 @@ GLC void glTextureParameterIiv(unsigned t, unsigned p, const int* v) {
 GLC void glTextureParameterIuiv(unsigned t, unsigned p, const unsigned* v) {
     dsa_b b = dsa_in(t, 0x0DE1); DP(glTexParameterIuiv, T1_piv)(b.tgt, p, (const int*)v); dsa_out(b);
 }
-GLC void glGetTextureParameteriv(unsigned t, unsigned p, int* v)   { dsa_b b = dsa_in(t, 0x0DE1); glGetTexParameteriv(b.tgt, p, v); dsa_out(b); }
-GLC void glGetTextureParameterfv(unsigned t, unsigned p, float* v) { dsa_b b = dsa_in(t, 0x0DE1); glGetTexParameterfv(b.tgt, p, v); dsa_out(b); }
+GLC void glGetTextureParameteriv(unsigned t, unsigned p, int* v) {
+    if (p == 0x1006) { *v = dsa_target_of(t); return; }
+    dsa_b b = dsa_in(t, 0x0DE1); glGetTexParameteriv(b.tgt, p, v); dsa_out(b);
+}
+GLC void glGetTextureParameterfv(unsigned t, unsigned p, float* v) {
+    if (p == 0x1006) { *v = (float)dsa_target_of(t); return; }
+    dsa_b b = dsa_in(t, 0x0DE1); glGetTexParameterfv(b.tgt, p, v); dsa_out(b);
+}
 GLC void glGetTextureParameterIiv(unsigned t, unsigned p, int* v) {
+    if (p == 0x1006) { *v = dsa_target_of(t); return; }
     dsa_b b = dsa_in(t, 0x0DE1); DP(glGetTexParameterIiv, T1_giv)(b.tgt, p, v); dsa_out(b);
 }
 GLC void glGetTextureParameterIuiv(unsigned t, unsigned p, unsigned* v) {
+    if (p == 0x1006) { *v = (unsigned)dsa_target_of(t); return; }
     dsa_b b = dsa_in(t, 0x0DE1); DP(glGetTexParameterIuiv, T1_giv)(b.tgt, p, (int*)v); dsa_out(b);
 }
 GLC void glGetTextureLevelParameteriv(unsigned t, int lv, unsigned p, int* v) {
@@ -219,14 +233,14 @@ GLC void glTextureBufferRange(unsigned tex, unsigned ifmt, unsigned buf, long of
     DP2(glTexBufferRange, glTexBufferRangeOES, D_tbr)(0x8C2A, ifmt, buf, off, size); dsa_out(b);
 }
 
-/* ---------- Buffere (se foloseste COPY_WRITE_BUFFER 0x8F37 / COPY_READ 0x8F36) ---------- */
+/* ---------- Buffers (uses COPY_WRITE_BUFFER 0x8F37 / COPY_READ 0x8F36) ---------- */
 static int  dsa_buf_in(unsigned buf) { int o = 0; DP(glGetIntegerv, F_geti)(0x8F37, &o); DP(glBindBuffer, F_uiui)(0x8F37, buf); return o; }
 static void dsa_buf_out(int o)       { DP(glBindBuffer, F_uiui)(0x8F37, (unsigned)o); }
 
 GLC void glCreateBuffers(int n, unsigned* ids) {
     DP(glGenBuffers, D_gen)(n, ids);
     int o = 0; DP(glGetIntegerv, F_geti)(0x8F37, &o);
-    for (int i = 0; i < n; i++) DP(glBindBuffer, F_uiui)(0x8F37, ids[i]);   /* creeaza obiectul */
+    for (int i = 0; i < n; i++) DP(glBindBuffer, F_uiui)(0x8F37, ids[i]);   /* create object */
     DP(glBindBuffer, F_uiui)(0x8F37, (unsigned)o);
 }
 GLC void glNamedBufferStorage(unsigned buf, long size, const void* data, unsigned flags) {
@@ -280,7 +294,7 @@ GLC void glGetNamedBufferSubData(unsigned buf, long off, long size, void* data) 
     int o = dsa_buf_in(buf); glGetBufferSubData(0x8F37, off, size, data); dsa_buf_out(o);
 }
 
-/* ---------- Framebuffere (fb 0 = FBO intern al shim-ului, cand exista) ---------- */
+/* ---------- Framebuffers (fb 0 = shim internal FBO, when available) ---------- */
 static unsigned dsa_fb(unsigned fb) { return fb ? fb : shim_x11_default_fbo(); }
 typedef struct { int d, r; } dsa_f;
 static dsa_f dsa_fin(unsigned fb) {
@@ -292,7 +306,7 @@ static dsa_f dsa_fin(unsigned fb) {
 static void dsa_fout(dsa_f s) {
     DP(glBindFramebuffer, F_uiui)(0x8CA9, (unsigned)s.d); DP(glBindFramebuffer, F_uiui)(0x8CA8, (unsigned)s.r);
 }
-static unsigned dsa_db(unsigned fb, unsigned b) {          /* GL_BACK etc. -> COLOR_ATTACHMENT0 pe FBO-ul shim */
+static unsigned dsa_db(unsigned fb, unsigned b) {          /* GL_BACK etc. -> COLOR_ATTACHMENT0 on shim FBO */
     if (!fb && dsa_fb(0) && (b == 0x0405 || b == 0x0404 || b == 0x0400 || b == 0x0402)) return 0x8CE0;
     return b;
 }
@@ -362,7 +376,7 @@ GLC void glGetNamedFramebufferAttachmentParameteriv(unsigned fb, unsigned att, u
     dsa_f s = dsa_fin(fb); glGetFramebufferAttachmentParameteriv(0x8D40, att, p, v); dsa_fout(s);
 }
 
-/* ---------- Renderbuffere ---------- */
+/* ---------- Renderbuffers ---------- */
 GLC void glCreateRenderbuffers(int n, unsigned* ids) {
     DP(glGenRenderbuffers, D_gen)(n, ids);
     int o = 0; DP(glGetIntegerv, F_geti)(0x8CA7, &o);
@@ -412,7 +426,7 @@ GLC void glVertexArrayAttribIFormat(unsigned vao, unsigned i, int sz, unsigned t
 }
 GLC void glVertexArrayAttribLFormat(unsigned vao, unsigned i, int sz, unsigned ty, unsigned ro) {
     (void)vao; (void)i; (void)sz; (void)ty; (void)ro;
-    if (gl_emul_debug_enabled()) fprintf(stderr, "[dsa] glVertexArrayAttribLFormat (double) nesuportat in ES\n");
+    if (gl_emul_debug_enabled()) fprintf(stderr, "[dsa] glVertexArrayAttribLFormat (double) unsupported in ES\n");
 }
 GLC void glVertexArrayAttribBinding(unsigned vao, unsigned i, unsigned b) {
     int o = dsa_va_in(vao); DP(glVertexAttribBinding, D_vu2)(i, b); dsa_va_out(o);
@@ -453,3 +467,78 @@ GLC void glTransformFeedbackBufferRange(unsigned xfb, unsigned idx, unsigned buf
     DP(glBindBufferRange, D_bbr)(0x8C8E, idx, buf, off, size);
     glBindTransformFeedback(0x8E22, keep);
 }
+
+/* ---------- Transform feedback queries ---------- */
+typedef void (*D_gi64)(unsigned, unsigned, long long*);
+
+GLC void glGetTransformFeedbackiv(unsigned xfb, unsigned p, int* v) {
+    unsigned keep = tfo_cur; glBindTransformFeedback(0x8E22, xfb);
+    if (p == 0x8E23 || p == 0x8E24) glGetIntegerv(p, v);      /* PAUSED / ACTIVE */
+    glBindTransformFeedback(0x8E22, keep);
+}
+GLC void glGetTransformFeedbacki_v(unsigned xfb, unsigned p, unsigned idx, int* v) {
+    unsigned keep = tfo_cur; glBindTransformFeedback(0x8E22, xfb);
+    if (p == 0x8C8F) DP(glGetIntegeri_v, D_gfp)(p, idx, v);   /* BUFFER_BINDING */
+    glBindTransformFeedback(0x8E22, keep);
+}
+GLC void glGetTransformFeedbacki64_v(unsigned xfb, unsigned p, unsigned idx, long long* v) {
+    unsigned keep = tfo_cur; glBindTransformFeedback(0x8E22, xfb);
+    if (p == 0x8C84 || p == 0x8C85) DP(glGetInteger64i_v, D_gi64)(p, idx, v);   /* START / SIZE */
+    glBindTransformFeedback(0x8E22, keep);
+}
+
+/* ---------- Vertex array indexed queries ---------- */
+GLC void glGetVertexArrayIndexediv(unsigned vao, unsigned idx, unsigned p, int* v) {
+    int o = dsa_va_in(vao);
+    switch (p) {
+    case 0x874E: *v = 0; break;                                 /* LONG: not supported in ES */
+    case 0x82D7: case 0x82D8:                                   /* VERTEX_BINDING_OFFSET / STRIDE */
+        DP(glGetIntegeri_v, D_gfp)(p, idx, v); break;
+    default: DP(glGetVertexAttribiv, D_gfp)(idx, p, v); break;
+    }
+    dsa_va_out(o);
+}
+GLC void glGetVertexArrayIndexed64iv(unsigned vao, unsigned idx, unsigned p, long long* v) {
+    int o = dsa_va_in(vao);
+    if (p == 0x82D7) DP(glGetInteger64i_v, D_gi64)(p, idx, v);  /* VERTEX_BINDING_OFFSET */
+    dsa_va_out(o);
+}
+
+/* ---------- Program pipelines ---------- */
+GLC void glCreateProgramPipelines(int n, unsigned* ids) {
+    DP(glGenProgramPipelines, D_gen)(n, ids);
+    int o = 0; DP(glGetIntegerv, F_geti)(0x825A, &o);           /* PROGRAM_PIPELINE_BINDING */
+    for (int i = 0; i < n; i++) DP(glBindProgramPipeline, D_ve)(ids[i]);
+    DP(glBindProgramPipeline, D_ve)((unsigned)o);
+}
+
+/* ---------- Compressed readback: impossible in ES ---------- */
+GLC void glGetCompressedTextureImage(unsigned tex, int lv, int bufSize, void* px) {
+    (void)tex; (void)lv; (void)bufSize; (void)px;
+    if (gl_emul_debug_enabled())
+        fprintf(stderr, "[dsa] glGetCompressedTextureImage is not supported on ES (ignored)\n");
+}
+
+/* ---------- ARB_query_buffer_object (emulated via map/subdata) ---------- */
+static void dsa_qbo(unsigned id, unsigned buf, unsigned p, long off, int bytes, int sgn) {
+    unsigned long long r = 0; unsigned av = 0;
+    RP(glGetQueryObjectuiv, N_gqo)(id, 0x8867, &av);            /* AVAILABLE */
+    if (p == 0x8867) r = av;
+    else if (p == 0x9192 && !av) r = ~0ull;                     /* NO_WAIT, unavailable -> -1 */
+    else if (p == 0x8866 || p == 0x9192) {
+        void* f = p_glGetQueryObjectui64vEXT;
+        if (f) ((H_qu64)f)(id, 0x8866, &r);
+        else { unsigned u = 0; RP(glGetQueryObjectuiv, N_gqo)(id, 0x8866, &u); r = u; }
+    } else return;
+    if (bytes == 4 && r != ~0ull) {                             /* clamp to 32 bits */
+        unsigned long long mx = sgn ? 0x7FFFFFFFull : 0xFFFFFFFFull;
+        if (r > mx) r = mx;
+    }
+    int o = dsa_buf_in(buf);
+    DP(glBufferSubData, D_bsd)(0x8F37, off, bytes, &r);         /* little-endian: first bytes */
+    dsa_buf_out(o);
+}
+GLC void glGetQueryBufferObjectiv(unsigned id, unsigned b, unsigned p, long off)    { dsa_qbo(id, b, p, off, 4, 1); }
+GLC void glGetQueryBufferObjectuiv(unsigned id, unsigned b, unsigned p, long off)   { dsa_qbo(id, b, p, off, 4, 0); }
+GLC void glGetQueryBufferObjecti64v(unsigned id, unsigned b, unsigned p, long off)  { dsa_qbo(id, b, p, off, 8, 1); }
+GLC void glGetQueryBufferObjectui64v(unsigned id, unsigned b, unsigned p, long off) { dsa_qbo(id, b, p, off, 8, 0); }

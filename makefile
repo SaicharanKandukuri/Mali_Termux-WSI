@@ -15,7 +15,7 @@ BUILD    := build
 LDFLAGS  += --target=$(TARGET) -L$(BUILD)
 
 # ---- Vulkan ----
-VK_DIR  := Xcb/Vulkan
+VK_DIR  := API/Vulkan
 VK_SRC  := $(VK_DIR)/Scripts/libvulkan.c
 VK_DEPS := $(wildcard $(VK_DIR)/Include/*)
 VK_OUT  := $(BUILD)/libvulkan.so.1
@@ -33,7 +33,7 @@ VK_FLAGS += -DSHIM_GLIBC
 endif
 
 # ---- GLU ----
-GLU_DIR    := Xcb/GL/GLU
+GLU_DIR    := API/GL/GLU
 TESS_DIR   := src/libtess2
 GLU_SRC    := $(wildcard $(GLU_DIR)/Scripts/*.c)
 TESS_SRC   := $(wildcard $(TESS_DIR)/Source/*.c)
@@ -42,57 +42,66 @@ GLU_OUT    := $(BUILD)/libGLU.so.1
 GLU_CFLAGS := -I$(TESS_DIR)/Include -I$(TESS_DIR)/Source
 
 # ---- GLUT ----
-GLUT_DIR    := Xcb/GL/GLUT
+GLUT_DIR    := API/GL/GLUT
 GLUT_SRC    := $(wildcard $(GLUT_DIR)/Scripts/*.c)
 GLUT_OBJ    := $(patsubst %.c,$(BUILD)/glut/%.o,$(GLUT_SRC))
 GLUT_OUT    := $(BUILD)/libglut.so.3
 GLUT_CFLAGS := -I$(GLUT_DIR)/Include
 
 # ---- GLFW ----
-GLFW_DIR    := Xcb/GL/GLFW
+GLFW_DIR    := API/GL/GLFW
 GLFW_SRC    := $(wildcard $(GLFW_DIR)/Scripts/*.c)
 GLFW_OUT    := $(BUILD)/libglfw.so.3
 GLFW_CFLAGS := -Isrc/glfw/include
 GLFW_LIBS   := -lxcb -lxcb-randr -lxcb-xkb -lxkbcommon -lxkbcommon-x11 -lEGL -ldl -lm -lpthread
 
 # ---- GBM ----
-GBM_DIR  := Xcb/EGL/GBM
+GBM_DIR  := API/EGL/GBM
 GBM_SRC  := $(wildcard $(GBM_DIR)/Scripts/*.c)
 GBM_OUT  := $(BUILD)/libgbm.so.1
 GBM_DEFS := 
 
 # ---- DRM ----
 PREFIX     ?= /data/data/com.termux/files/usr
-DRM_DIR    := Xcb/drm
+DRM_DIR    := API/drm
 DRM_SRC    := $(wildcard $(DRM_DIR)/Scripts/*.c)
 DRM_OUT    := $(BUILD)/libdrm.so.2
 DRM_CFLAGS := -D_GNU_SOURCE -I$(PREFIX)/include -I$(PREFIX)/include/libdrm
 
 # ---- DRI (VA-API) ----
-DRI_DIR    := Xcb/dri
+DRI_DIR    := API/dri
 DRI_SRC    := $(wildcard $(DRI_DIR)/Scripts/*.c)
 DRI_DEPS   := $(wildcard $(DRI_DIR)/Include/*)
 DRI_OUT    := $(BUILD)/ahb_drv_video.so
 DRI_CFLAGS := -D_GNU_SOURCE -I$(DRI_DIR)/Include -I$(PREFIX)/include
 
 # ---- GLES ----
-GLES_DIR    := Xcb/GLES
+GLES_DIR    := API/GLES
 GLES_SRC    := $(GLES_DIR)/Scripts/libGLESv2_shim.c
-GLES_DEPS   := $(wildcard $(GLES_DIR)/Include/*) $(wildcard Xcb/EGL/Include/*)
+GLES_DEPS   := $(wildcard $(GLES_DIR)/Include/*) $(wildcard API/EGL/Include/*)
 GLES_OUT    := $(BUILD)/libGLESv2.so.2
-GLES_CFLAGS := -I$(GLES_DIR)/Include -IXcb/EGL/Include
+GLES_CFLAGS := -I$(GLES_DIR)/Include -IAPI/EGL/Include
 GLES_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
 
 # ---- EGL ----
-EGL_DIR    := Xcb/EGL
+EGL_DIR    := API/EGL
 EGL_SRC    := $(EGL_DIR)/Scripts/egl_x11_shim.c
 EGL_DEPS   := $(wildcard $(EGL_DIR)/Include/*)
 EGL_OUT    := $(BUILD)/libEGL.so.1
 EGL_CFLAGS := -I$(EGL_DIR)/Include
 EGL_LIBS   := -lxcb -lxcb-dri3 -lxcb-present -ldl -lpthread
 
+# ---- SPIRV-Cross (GL_ARB_gl_spirv, API/GL/Scripts/gl_spirv.c) ----
+# Static archives from the system package; the order does not matter (start-group)
+# and --exclude-libs keeps the SPIRV-Cross symbols out of libGL.so.1's exports.
+# Dynamic alternative:  make gl SPV_LIBS=-lspirv-cross-c-shared
+SPV_LIBS ?= -Wl,--start-group \
+            -lspirv-cross-c -lspirv-cross-glsl -lspirv-cross-hlsl -lspirv-cross-msl \
+            -lspirv-cross-cpp -lspirv-cross-reflect -lspirv-cross-core \
+            -Wl,--end-group -Wl,--exclude-libs,ALL
+
 # ---- GL ----
-GL_DIR        := Xcb/GL
+GL_DIR        := API/GL
 GL_SRC        := $(GL_DIR)/Scripts/glx_shim.c
 GL_SHIM_OBJ   := $(BUILD)/gl/glx_shim.o
 GL_BRIDGE_SRC := $(GL_DIR)/Scripts/gl_dt_bridge.cpp
@@ -101,11 +110,13 @@ GL_OUT        := $(BUILD)/libGL.so.1
 GL_DEPS       := $(wildcard $(GL_DIR)/Scripts/*) $(wildcard $(GL_DIR)/Include/*) \
                  $(GLES_DIR)/Scripts/libGLESv2_shim.c $(GLES_DEPS) src/bcdec/bcdec.h
 GL_CFLAGS     := -I$(GL_DIR)/Include -I$(GL_DIR)/Scripts \
-                 -I$(GLES_DIR)/Scripts -I$(GLES_DIR)/Include -IXcb/EGL/Include \
-                 -Isrc/bcdec -Wno-unused-function -Wno-misleading-indentation
+                 -I$(GLES_DIR)/Scripts -I$(GLES_DIR)/Include -IAPI/EGL/Include \
+                 -Isrc/bcdec -I$(PREFIX)/include \
+                 -Wno-unused-function -Wno-misleading-indentation
 GL_CXXFLAGS   := -std=c++17 -fvisibility=hidden -I$(GL_DIR)/Include \
                  -Wno-unused-function -Wno-unused-variable
-GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL -ldl -lpthread -lm -lc++
+# SPV_LIBS comes before -lc++: the SPIRV-Cross archives need libc++ symbols
+GL_LIBS       := -lxcb -lxcb-dri3 -lxcb-present -lEGL $(SPV_LIBS) -ldl -lpthread -lm -lc++
 
 .PHONY: all vulkan glu glut glfw gbm drm dri gles egl gl gl-runtime clean
 

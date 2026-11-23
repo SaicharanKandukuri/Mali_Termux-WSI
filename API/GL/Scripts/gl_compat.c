@@ -17,12 +17,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <limits.h>
 
 #define GLC __attribute__((visibility("default")))
-#define RP(n, T) ((T)p_##n)
+#define RP(n, T) ((T)(p_##n ? p_##n : gl_rp_missing(#n)))
 
 /* Convert TEXTURE_1D (0x0DE0) -> TEXTURE_2D (0x0DE1) */
 #ifndef T1D_DEFINED
@@ -803,8 +804,8 @@ static int gl_cap_ignored(unsigned cap) {
     case 0x0DE1: case 0x8513:                                      /* TEXTURE_2D, TEXTURE_CUBE_MAP (legacy compat) */
     case 0x0B50: case 0x0BC0: case 0x0B60: case 0x0B57: case 0x0BA1: /* LIGHTING, ALPHA_TEST, FOG, COLOR_MATERIAL, NORMALIZE */
     case 0x0C60: case 0x0C61: case 0x0C62:                         /* TEXTURE_GEN_S/T/R */
-      case 0x8DB9:   /* FRAMEBUFFER_SRGB */
-case 0x0B10:   /* POINT_SMOOTH */
+    case 0x8DB9:                                                   /* FRAMEBUFFER_SRGB */
+    case 0x0B10:                                                   /* POINT_SMOOTH */
         return 1;
     }
     if ((cap >= 0x3000 && cap <= 0x3007) ||                        /* CLIP_DISTANCE0..7 */
@@ -812,27 +813,30 @@ case 0x0B10:   /* POINT_SMOOTH */
     return 0;
 }
 
-/* Forward declaration pentru notificarea modulului Dual-Source Blending */
+/* Forward declarations */
 static void dsb_on_enable(unsigned cap, int on);
+static int cm_cap(unsigned cap, int on);
+static int ev_cap(unsigned cap, int on);
 
 GLC void glEnable(unsigned cap) {
     if (gl_cap_ignored(cap)) return;
     cap = gl_cap_xlat(cap);
-    REC1(OP_ENABLE, glEnable, F_ui, cap)
+    if (IM.rec_id) { gl_cmd* c = rec_cmd(OP_ENABLE); c->u[0] = cap; if (REC_SKIP()) return; }
+    if (cm_cap(cap, 1)) return;
+    RP(glEnable, F_ui)(cap);
     dsb_on_enable(cap, 1);
 }
 
 GLC void glDisable(unsigned cap) {
     if (gl_cap_ignored(cap)) return;
     cap = gl_cap_xlat(cap);
-    REC1(OP_DISABLE, glDisable, F_ui, cap)
+    if (IM.rec_id) { gl_cmd* c = rec_cmd(OP_DISABLE); c->u[0] = cap; if (REC_SKIP()) return; }
+    if (cm_cap(cap, 0)) return;
+    RP(glDisable, F_ui)(cap);
     dsb_on_enable(cap, 0);
 }
 
-static void dsa_note(unsigned tex, unsigned target);   
-
 GLC void glBindTexture(unsigned target, unsigned tex) {
-    dsa_note(tex, target);
     target = t1d(target);                                  /* Convert GL_TEXTURE_1D -> GL_TEXTURE_2D */
     if (IM.rec_id) {
         gl_cmd* c = rec_cmd(OP_BINDTEX); c->u[0] = target; c->u[1] = tex;
@@ -1025,7 +1029,6 @@ GLC void glDrawPixels(int w, int h, unsigned fmt, unsigned type, const void *px)
         px = conv; ifmt = 0x1908;
     }
 
-
     /* --- Save State --- */
     int old_tex = 0, old_mm = 0x1700, old_env = 0x2100, vp[4];
     float old_col[4] = { 1, 1, 1, 1 }, old_tc[4] = { 0, 0, 0, 1 };
@@ -1110,7 +1113,7 @@ static float bm_floor(float f) { int i = (int)f; return (float)(f < (float)i ? i
 GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymove, const unsigned char* bm) {
     im_init();
     gl_warn_es("glBitmap");
-    if (IM.in_begin || IM.rec_id) return;             
+    if (IM.in_begin || IM.rec_id) return;              /* nu se inregistreaza in display lists */
     if (!g_rvalid) return;
 
     if (w > 0 && h > 0 && bm) {
@@ -1118,13 +1121,13 @@ GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymo
         if (al < 1) al = 4;
         int stride = ((((w + 7) / 8) + al - 1) / al) * al;
         size_t maxq = (size_t)h * (size_t)((w + 1) / 2);
-        if (maxq > 16384) maxq = 16384;                              
+        if (maxq > 16384) maxq = 16384;                               /* limita im_draw: 65536 varfuri */
         float* v = malloc(maxq * 12 * sizeof(float));
         size_t nq = 0;
         float bx = bm_floor(g_rasterx - xorig), by = bm_floor(g_rastery - yorig);
 
         for (int r = 0; r < h && v; r++) {
-            const unsigned char* row = bm + (size_t)r * stride;      
+            const unsigned char* row = bm + (size_t)r * stride;       /* randurile sunt de jos in sus */
             int x = 0;
             while (x < w) {
                 if (!((row[x >> 3] >> (7 - (x & 7))) & 1)) { x++; continue; }
@@ -1175,6 +1178,7 @@ GLC void glBitmap(int w, int h, float xorig, float yorig, float xmove, float ymo
     }
     g_rasterx += xmove; g_rastery += ymove;                           /* avans raster, ca in GL */
 }
+
 /* ---------- Display Lists Execution ---------- */
 static void list_exec(unsigned id, int depth) {
     if (id == 0 || id >= gl_lists_cap || depth > 32) return;
@@ -1190,8 +1194,8 @@ static void list_exec(unsigned id, int depth) {
         case OP_LIGHT:     RP(glLightfv, F_mat)(c->u[0], c->u[1], c->f); break;
         case OP_SHADE:     RP(glShadeModel, F_ui)(c->u[0]); break;
         case OP_FRONTFACE: cc_note_front(c->u[0]); cc_setfront(); break;
-        case OP_ENABLE:    RP(glEnable, F_ui)(c->u[0]);  dsb_on_enable(c->u[0], 1); break;
-        case OP_DISABLE:   RP(glDisable, F_ui)(c->u[0]); dsb_on_enable(c->u[0], 0); break;
+        case OP_ENABLE:  if (!cm_cap(c->u[0], 1)) { RP(glEnable, F_ui)(c->u[0]);  dsb_on_enable(c->u[0], 1); } break;
+        case OP_DISABLE: if (!cm_cap(c->u[0], 0)) { RP(glDisable, F_ui)(c->u[0]); dsb_on_enable(c->u[0], 0); } break;
         case OP_BINDTEX:   RP(glBindTexture, F_uiui)(c->u[0], c->u[1]); break;
         case OP_PUSH:      RP(glPushMatrix, F_v)(); break;
         case OP_POP:       RP(glPopMatrix, F_v)(); break;
@@ -1374,7 +1378,7 @@ GLC void glPointParameteri(unsigned p, int v) {
 }
 GLC void glPointParameteriv(unsigned p, const int* v) {
     float f = (float)v[0];
-RP(glPointParameterfv, F_clip)(p, &f);
+    RP(glPointParameterfv, F_clip)(p, &f);
 }
 
 /* Transpose matrices: transpune pe CPU, apoi Load/Mult */
@@ -1387,3 +1391,681 @@ GLC void glMultTransposeMatrixd(const double* m) { float t[16]; tr16(m, t);  glM
 
 GLC void glCompressedTexImage2D(unsigned, int, unsigned, int, int, int, int, const void*);
 GLC void glCompressedTexSubImage2D(unsigned, int, int, int, int, int, unsigned, int, const void*);
+
+/* ===== glColorMaterial emulation (ES1.1: only AMBIENT_AND_DIFFUSE is native) ===== */
+typedef void (*CM_mfv)(unsigned, unsigned, const float*);
+typedef void (*CM_en)(unsigned);
+
+static unsigned cm_mode = 0x1602;   /* GL_AMBIENT_AND_DIFFUSE */
+static int      cm_on;              /* app's GL_COLOR_MATERIAL state */
+static float    cm_col[4] = { 1, 1, 1, 1 };
+
+static int cm_emul(void) { return cm_on && cm_mode != 0x1602; }
+
+static void cm_native(void) {       /* sync the native enable with the state above */
+    if (cm_on && cm_mode == 0x1602) RP(glEnable, CM_en)(0x0B57);
+    else                            RP(glDisable, CM_en)(0x0B57);
+}
+
+static void cm_apply(void) {        /* push current color into the tracked material */
+    if (!cm_emul()) return;
+    RP(glMaterialfv, CM_mfv)(0x0408, cm_mode, cm_col);
+}
+
+GLC void glColorMaterial(unsigned face, unsigned mode) {
+    (void)face;
+    if (mode != 0x1200 && mode != 0x1201 && mode != 0x1202 &&
+        mode != 0x1600 && mode != 0x1602) return;   /* GL_INVALID_ENUM */
+    cm_mode = mode;
+    cm_native();
+    cm_apply();
+}
+
+/* call from your existing glEnable/glDisable when cap == 0x0B57; return 1 = handled */
+static int cm_cap(unsigned cap, int on) {
+    if (ev_cap(cap, on)) return 1;
+    if (cap != 0x0B57) return 0;
+    cm_on = on;
+    cm_native();
+    cm_apply();
+    return 1;
+}
+
+/* ---------- glFog int variants (ES1 has only f/fv/x) ---------- */
+typedef void (*F_uif_)(unsigned, float);
+typedef void (*F_fogfv)(unsigned, const float*);
+
+GLC void glFogi(unsigned pname, int v) {
+    /* GL_FOG_MODE (0x0B65) takes an enum: pass as-is; others convert */
+    RP(glFogf, F_uif_)(pname, (float)v);
+}
+GLC void glFogiv(unsigned pname, const int* v) {
+    if (pname == 0x0B66) {                       /* GL_FOG_COLOR: ints map [-MAXINT,MAXINT] -> [-1,1] */
+        float c[4];
+        for (int i = 0; i < 4; i++) c[i] = (float)((double)v[i] / 2147483647.0);
+        RP(glFogfv, F_fogfv)(pname, c);
+    } else {
+        RP(glFogf, F_uif_)(pname, (float)v[0]);
+    }
+}
+
+typedef void (*X_b)(unsigned char);
+typedef void (*X_4b)(unsigned char, unsigned char, unsigned char, unsigned char);
+typedef void (*X_4i)(int, int, int, int);
+typedef void (*X_get3)(unsigned, unsigned, float*);
+typedef void (*X_rp)(int, int, int, int, unsigned, unsigned, void*);
+
+GLC void glTexGenf(unsigned coord, unsigned pname, float v);
+GLC void glTexGenfv(unsigned coord, unsigned pname, const float* v);
+
+static int   x_es1(void) { return T_glx.ctx && T_glx.ctx->ver == 1; }
+static int   x_gi(unsigned p) { int v = 0;   RP(glGetIntegerv, F_geti)(p, &v); return v; }
+static float x_gf(unsigned p) { float v = 0; RP(glGetFloatv, F_getf)(p, &v);   return v; }
+
+/* ======================= glPushAttrib / glPopAttrib ======================= */
+#define XA_CURRENT     0x00000001u
+#define XA_POINT       0x00000002u
+#define XA_LINE        0x00000004u
+#define XA_POLYGON     0x00000008u
+#define XA_LIGHTING    0x00000040u
+#define XA_FOG         0x00000080u
+#define XA_DEPTH       0x00000100u
+#define XA_STENCIL     0x00000400u
+#define XA_VIEWPORT    0x00000800u
+#define XA_TRANSFORM   0x00001000u
+#define XA_ENABLE      0x00002000u
+#define XA_COLOR       0x00004000u
+#define XA_TEXTURE     0x00040000u
+#define XA_SCISSOR     0x00080000u
+#define XA_MULTISAMPLE 0x20000000u
+
+static const struct { unsigned cap, grp; } x_caps[] = {
+    /* generic (also valid in ES2/3) */
+    { 0x0B71, XA_ENABLE | XA_DEPTH },   { 0x0BE2, XA_ENABLE | XA_COLOR },   { 0x0B44, XA_ENABLE | XA_POLYGON },
+    { 0x0C11, XA_ENABLE | XA_SCISSOR }, { 0x0B90, XA_ENABLE | XA_STENCIL }, { 0x0BD0, XA_ENABLE | XA_COLOR },
+    { 0x8037, XA_ENABLE | XA_POLYGON },
+    /* fixed-function: ES1 only */
+    { 0x0BC0, XA_ENABLE | XA_COLOR },   { 0x0BF2, XA_ENABLE | XA_COLOR },
+    { 0x0B50, XA_ENABLE | XA_LIGHTING },{ 0x0B57, XA_ENABLE | XA_LIGHTING },
+    { 0x4000, XA_ENABLE | XA_LIGHTING },{ 0x4001, XA_ENABLE | XA_LIGHTING },{ 0x4002, XA_ENABLE | XA_LIGHTING },
+    { 0x4003, XA_ENABLE | XA_LIGHTING },{ 0x4004, XA_ENABLE | XA_LIGHTING },{ 0x4005, XA_ENABLE | XA_LIGHTING },
+    { 0x4006, XA_ENABLE | XA_LIGHTING },{ 0x4007, XA_ENABLE | XA_LIGHTING },
+    { 0x0B60, XA_ENABLE | XA_FOG },     { 0x0B20, XA_ENABLE | XA_LINE },    { 0x0B10, XA_ENABLE | XA_POINT },
+    { 0x0DE1, XA_ENABLE | XA_TEXTURE },
+    { 0x0BA1, XA_ENABLE | XA_TRANSFORM },{ 0x803A, XA_ENABLE | XA_TRANSFORM },
+    { 0x3000, XA_ENABLE | XA_TRANSFORM },{ 0x3001, XA_ENABLE | XA_TRANSFORM },{ 0x3002, XA_ENABLE | XA_TRANSFORM },
+    { 0x3003, XA_ENABLE | XA_TRANSFORM },{ 0x3004, XA_ENABLE | XA_TRANSFORM },{ 0x3005, XA_ENABLE | XA_TRANSFORM },
+    { 0x809D, XA_ENABLE | XA_MULTISAMPLE },
+};
+#define XA_NGEN 7
+#define XA_NCAP 32
+_Static_assert(sizeof x_caps / sizeof x_caps[0] == XA_NCAP, "x_caps size");
+
+static const struct { unsigned pn; int off; } x_lp[] = {
+    { 0x1200, 0 }, { 0x1201, 4 }, { 0x1202, 8 }, { 0x1203, 12 }, { 0x1204, 16 },
+    { 0x1205, 19 }, { 0x1206, 20 }, { 0x1207, 21 }, { 0x1208, 22 }, { 0x1209, 23 },
+};
+static const unsigned x_mp[5] = { 0x1200, 0x1201, 0x1202, 0x1600, 0x1601 };
+
+typedef struct {
+    unsigned mask;
+    unsigned char en[XA_NCAP];
+    float col[4], nrm[3], tc[2];
+    int dfunc, dmask; float dclear;
+    int bsrc, bdst, afunc; float aref, clr[4]; int cmask[4];
+    int cull; float pofs[2], lw, ps;
+    int vp[4], sc[4]; float dr[2];
+    int mm, shade, tex;
+    float fogd, fogs, foge, fogc[4]; int fogm;
+    float lma[4]; int lm2;
+    float lt[8][24], mat[5][4];
+} x_attr;
+
+static __thread x_attr* x_as[32];
+static __thread int x_an;
+
+static int x_isen(unsigned cap) {
+    if (cap == 0x0B57) return cm_on;                 /* tracked by glColorMaterial emulation */
+    return RP(glIsEnabled, F_isen)(cap) ? 1 : 0;
+}
+
+GLC void glPushAttrib(unsigned mask) {
+    im_init();
+    if (IM.rec_id || IM.in_begin || x_an >= 32) return;   /* not recordable in display lists */
+    x_attr* a = calloc(1, sizeof *a);
+    if (!a) return;
+    int es1 = x_es1(), nc = es1 ? XA_NCAP : XA_NGEN;
+    a->mask = mask;
+    for (int i = 0; i < nc; i++)
+        if (x_caps[i].grp & mask) a->en[i] = (unsigned char)x_isen(x_caps[i].cap);
+
+    if (mask & XA_CURRENT) { memcpy(a->col, IM.cc, sizeof a->col); memcpy(a->nrm, IM.cn, sizeof a->nrm); memcpy(a->tc, IM.ct, sizeof a->tc); }
+    if (mask & XA_DEPTH) { a->dfunc = x_gi(0x0B74); a->dmask = x_gi(0x0B72); a->dclear = x_gf(0x0B73); }
+    if (mask & XA_COLOR) {
+        RP(glGetFloatv, F_getf)(0x0C22, a->clr);
+        RP(glGetIntegerv, F_geti)(0x0C23, a->cmask);
+        if (es1) { a->bsrc = x_gi(0x0BE1); a->bdst = x_gi(0x0BE0); a->afunc = x_gi(0x0BC1); a->aref = x_gf(0x0BC2); }
+    }
+    if (mask & XA_POLYGON) { a->cull = x_gi(0x0B45); a->pofs[0] = x_gf(0x8038); a->pofs[1] = x_gf(0x2A00); }
+    if (mask & XA_LINE)    a->lw = x_gf(0x0B21);
+    if ((mask & XA_POINT) && es1) a->ps = x_gf(0x0B11);
+    if (mask & XA_VIEWPORT) { RP(glGetIntegerv, F_geti)(0x0BA2, a->vp); RP(glGetFloatv, F_getf)(0x0B70, a->dr); }
+    if (mask & XA_SCISSOR)  RP(glGetIntegerv, F_geti)(0x0C10, a->sc);
+    if (mask & XA_TEXTURE)  a->tex = x_gi(0x8069);
+    if (es1) {
+        if (mask & XA_TRANSFORM) a->mm = x_gi(0x0BA0);
+        if (mask & XA_FOG) {
+            a->fogd = x_gf(0x0B62); a->fogs = x_gf(0x0B63); a->foge = x_gf(0x0B64);
+            a->fogm = x_gi(0x0B65); RP(glGetFloatv, F_getf)(0x0B66, a->fogc);
+        }
+        if (mask & XA_LIGHTING) {
+            a->shade = x_gi(0x0B54); a->lm2 = x_gi(0x0B52);
+            RP(glGetFloatv, F_getf)(0x0B53, a->lma);
+            for (int i = 0; i < 8; i++)
+                for (int k = 0; k < 10; k++)
+                    RP(glGetLightfv, X_get3)(0x4000 + i, x_lp[k].pn, a->lt[i] + x_lp[k].off);
+            for (int k = 0; k < 5; k++) RP(glGetMaterialfv, X_get3)(0x0408, x_mp[k], a->mat[k]);
+        }
+    }
+    x_as[x_an++] = a;
+}
+
+GLC void glPopAttrib(void) {
+    if (IM.rec_id || x_an <= 0) return;
+    x_attr* a = x_as[--x_an];
+    unsigned m = a->mask;
+    int es1 = x_es1(), nc = es1 ? XA_NCAP : XA_NGEN;
+
+    for (int i = 0; i < nc; i++)                      /* our glEnable/glDisable handle xlat/color-material/dsb */
+        if (x_caps[i].grp & m) { if (a->en[i]) glEnable(x_caps[i].cap); else glDisable(x_caps[i].cap); }
+
+    if (m & XA_CURRENT) { glColor4f(a->col[0], a->col[1], a->col[2], a->col[3]); glNormal3f(a->nrm[0], a->nrm[1], a->nrm[2]); glTexCoord2f(a->tc[0], a->tc[1]); }
+    if (m & XA_DEPTH) { RP(glDepthFunc, F_ui)((unsigned)a->dfunc); RP(glDepthMask, X_b)((unsigned char)a->dmask); RP(glClearDepthf, F_f)(a->dclear); }
+    if (m & XA_COLOR) {
+        RP(glClearColor, F_ffff)(a->clr[0], a->clr[1], a->clr[2], a->clr[3]);
+        RP(glColorMask, X_4b)((unsigned char)a->cmask[0], (unsigned char)a->cmask[1], (unsigned char)a->cmask[2], (unsigned char)a->cmask[3]);
+        if (es1) {
+            RP(glBlendFunc, F_uiui)((unsigned)a->bsrc, (unsigned)a->bdst);
+            RP(glAlphaFunc, F_uif)((unsigned)a->afunc, a->aref);
+        }
+    }
+    if (m & XA_TEXTURE)  RP(glBindTexture, F_uiui)(0x0DE1, (unsigned)a->tex);
+
+    if (es1) {
+        if (m & XA_FOG) {
+            float fm = (float)a->fogm;
+            RP(glFogfv, F_clip)(0x0B62, &a->fogd); RP(glFogfv, F_clip)(0x0B63, &a->fogs);
+            RP(glFogfv, F_clip)(0x0B64, &a->foge); RP(glFogfv, F_clip)(0x0B65, &fm);
+            RP(glFogfv, F_clip)(0x0B66, a->fogc);
+        }
+        if (m & XA_LIGHTING) {
+            float two = (float)a->lm2;
+            int mm0 = x_gi(0x0BA0);
+            RP(glShadeModel, F_ui)((unsigned)a->shade);
+            RP(glLightModelfv, F_clip)(0x0B53, a->lma); RP(glLightModelfv, F_clip)(0x0B52, &two);
+            for (int k = 0; k < 5; k++) RP(glMaterialfv, F_mat)(0x0408, x_mp[k], a->mat[k]);
+            /* saved position/direction are in eye space: set them under an identity modelview */
+            RP(glMatrixMode, F_ui)(0x1700); RP(glPushMatrix, F_v)(); RP(glLoadIdentity, F_v)();
+            for (int i = 0; i < 8; i++)
+                for (int k = 0; k < 10; k++)
+                    RP(glLightfv, F_mat)(0x4000 + i, x_lp[k].pn, a->lt[i] + x_lp[k].off);
+            RP(glPopMatrix, F_v)(); RP(glMatrixMode, F_ui)((unsigned)mm0);
+        }
+        if (m & XA_TRANSFORM) RP(glMatrixMode, F_ui)((unsigned)a->mm);
+    }
+    free(a);
+}
+
+/* ---------- Client attribs ---------- */
+typedef struct { unsigned mask; unsigned char en[4]; int ua, pa; } x_cattr;
+static __thread x_cattr x_cs[16];
+static __thread int x_cn;
+static const unsigned x_ccaps[4] = { 0x8074, 0x8075, 0x8076, 0x8078 };
+
+GLC void glPushClientAttrib(unsigned mask) {
+    if (x_cn >= 16) return;
+    x_cattr* c = &x_cs[x_cn++];
+    c->mask = mask;
+    if (mask & 0x2) for (int i = 0; i < 4; i++) c->en[i] = RP(glIsEnabled, F_isen)(x_ccaps[i]) ? 1 : 0;
+    if (mask & 0x1) { c->ua = x_gi(0x0CF5); c->pa = x_gi(0x0D05); }
+}
+GLC void glPopClientAttrib(void) {
+    if (x_cn <= 0) return;
+    x_cattr* c = &x_cs[--x_cn];
+    if (c->mask & 0x2)
+        for (int i = 0; i < 4; i++)
+            (c->en[i] ? RP(glEnableClientState, F_ui) : RP(glDisableClientState, F_ui))(x_ccaps[i]);
+    if (c->mask & 0x1) {
+        RP(glPixelStorei, F_uiui)(0x0CF5, (unsigned)c->ua);
+        RP(glPixelStorei, F_uiui)(0x0D05, (unsigned)c->pa);
+    }
+}
+
+/* ======================= Vertex array tracking + glArrayElement ======================= */
+typedef struct { int size, stride, vbo; unsigned type; const char* p; } x_ap;
+static __thread x_ap x_av, x_an_, x_ac, x_at;
+
+GLC void glVertexPointer(int s, unsigned t, int st, const void* p) {
+    x_av = (x_ap){ s, st, x_gi(0x8894), t, p };
+    RP(glVertexPointer, F_vptr)(s, t, st, p);
+}
+GLC void glColorPointer(int s, unsigned t, int st, const void* p) {
+    x_ac = (x_ap){ s, st, x_gi(0x8894), t, p };
+    RP(glColorPointer, F_vptr)(s, t, st, p);
+}
+GLC void glTexCoordPointer(int s, unsigned t, int st, const void* p) {
+    x_at = (x_ap){ s, st, x_gi(0x8894), t, p };
+    RP(glTexCoordPointer, F_vptr)(s, t, st, p);
+}
+GLC void glNormalPointer(unsigned t, int st, const void* p) {
+    x_an_ = (x_ap){ 3, st, x_gi(0x8894), t, p };
+    RP(glNormalPointer, F_nptr)(t, st, p);
+}
+
+static int x_tsz(unsigned t) {
+    switch (t) {
+    case 0x1400: case 0x1401: return 1;
+    case 0x1402: case 0x1403: return 2;
+    case 0x140A: return 8;
+    default: return 4;                                   /* INT, UINT, FLOAT, FIXED */
+    }
+}
+/* read component k; norm=1 maps integer types to [0,1] / [-1,1] like glColor/glNormal */
+static float x_rd(unsigned t, const char* q, int k, int norm) {
+    float f; double d; int i; unsigned u; short s; unsigned short us; signed char sb; unsigned char ub;
+    q += (size_t)k * x_tsz(t);
+    switch (t) {
+    case 0x1406: memcpy(&f, q, 4);  return f;
+    case 0x140A: memcpy(&d, q, 8);  return (float)d;
+    case 0x140C: memcpy(&i, q, 4);  return i / 65536.0f;
+    case 0x1401: ub = *(const unsigned char*)q; return norm ? ub / 255.0f : (float)ub;
+    case 0x1400: sb = *(const signed char*)q;   return norm ? sb / 127.0f : (float)sb;
+    case 0x1403: memcpy(&us, q, 2); return norm ? us / 65535.0f : (float)us;
+    case 0x1402: memcpy(&s, q, 2);  return norm ? s / 32767.0f : (float)s;
+    case 0x1405: memcpy(&u, q, 4);  return norm ? (float)(u / 4294967295.0) : (float)u;
+    case 0x1404: memcpy(&i, q, 4);  return norm ? (float)(i / 2147483647.0) : (float)i;
+    }
+    return 0.0f;
+}
+static const char* x_el(const x_ap* a, int i) {
+    int st = a->stride ? a->stride : a->size * x_tsz(a->type);
+    return a->p + (size_t)i * (size_t)st;
+}
+
+static void x_arr(unsigned cap, int on) {
+    (on ? RP(glEnableClientState, F_ui) : RP(glDisableClientState, F_ui))(cap);
+}
+
+GLC void glInterleavedArrays(unsigned fmt, int stride, const void* p) {
+    int tc = 0, cs = 0, csz = 0, nrm = 0, vs = 3;
+    unsigned ct = 0x1406;
+    switch (fmt) {
+    case 0x2A20: vs = 2; break;                                              /* V2F */
+    case 0x2A21: break;                                                      /* V3F */
+    case 0x2A22: cs = 4; ct = 0x1401; csz = 4; vs = 2; break;                /* C4UB_V2F */
+    case 0x2A23: cs = 4; ct = 0x1401; csz = 4; break;                        /* C4UB_V3F */
+    case 0x2A25: nrm = 1; break;                                             /* N3F_V3F */
+    case 0x2A26: cs = 4; csz = 16; nrm = 1; break;                           /* C4F_N3F_V3F */
+    case 0x2A27: tc = 2; break;                                              /* T2F_V3F */
+    case 0x2A28: tc = 4; vs = 4; break;                                      /* T4F_V4F */
+    case 0x2A29: tc = 2; cs = 4; ct = 0x1401; csz = 4; break;                /* T2F_C4UB_V3F */
+    case 0x2A2B: tc = 2; nrm = 1; break;                                     /* T2F_N3F_V3F */
+    case 0x2A2C: tc = 2; cs = 4; csz = 16; nrm = 1; break;                   /* T2F_C4F_N3F_V3F */
+    case 0x2A2D: tc = 4; cs = 4; csz = 16; nrm = 1; vs = 4; break;           /* T4F_C4F_N3F_V4F */
+    default: return;                                                         /* C3F_*: unsupported in ES1 */
+    }
+    int tcb = tc * 4, nb = nrm * 12, total = tcb + csz + nb + vs * 4;
+    if (stride <= 0) stride = total;
+    const char* b = p;
+    x_arr(0x8078, tc); x_arr(0x8076, cs); x_arr(0x8075, nrm); x_arr(0x8074, 1);
+    if (tc)  glTexCoordPointer(tc, 0x1406, stride, b);
+    if (cs)  glColorPointer(4, ct, stride, b + tcb);
+    if (nrm) glNormalPointer(0x1406, stride, b + tcb + csz);
+    glVertexPointer(vs, 0x1406, stride, b + tcb + csz + nb);
+}
+
+/* ======================= TexGen double ======================= */
+GLC void glTexGend(unsigned c, unsigned p, double v) { glTexGenf(c, p, (float)v); }
+GLC void glTexGendv(unsigned c, unsigned p, const double* v) {
+    float f[4] = { 0, 0, 0, 0 };
+    int n = (p == 0x2500) ? 1 : 4;                    /* TEXTURE_GEN_MODE : OBJECT/EYE_PLANE */
+    for (int i = 0; i < n; i++) f[i] = (float)v[i];
+    glTexGenfv(c, p, f);
+}
+
+/* ======================= Getters ======================= */
+static int x_i32(float f) { if (f > 1.0f) f = 1.0f; if (f < -1.0f) f = -1.0f; return (int)((double)f * 2147483647.0); }
+
+GLC void glGetMaterialiv(unsigned face, unsigned p, int* out) {
+    (void)face;
+    float f[4] = { 0, 0, 0, 0 };
+    RP(glGetMaterialfv, X_get3)(0x0408, p, f);
+    if (p == 0x1601) out[0] = (int)f[0];
+    else for (int i = 0; i < 4; i++) out[i] = x_i32(f[i]);
+}
+GLC void glGetLightiv(unsigned l, unsigned p, int* out) {
+    float f[4] = { 0, 0, 0, 0 };
+    RP(glGetLightfv, X_get3)(l, p, f);
+    if (p >= 0x1200 && p <= 0x1202) for (int i = 0; i < 4; i++) out[i] = x_i32(f[i]);   /* colors: scaled */
+    else if (p == 0x1203) for (int i = 0; i < 4; i++) out[i] = (int)f[i];               /* position */
+    else if (p == 0x1204) for (int i = 0; i < 3; i++) out[i] = (int)f[i];               /* spot direction */
+    else out[0] = (int)f[0];
+}
+GLC void glGetClipPlane(unsigned plane, double* eq) {
+    float f[4] = { 0, 0, 0, 0 };
+    RP(glGetClipPlanef, F_getf)(plane, f);            /* ES 1.1 */
+    for (int i = 0; i < 4; i++) eq[i] = f[i];
+}
+GLC void glGetPolygonStipple(unsigned char* m) { memset(m, 0xFF, 128); }
+
+/* ======================= glCopyPixels (GL_COLOR only) ======================= */
+GLC void glCopyPixels(int x, int y, int w, int h, unsigned type) {
+    if (type != 0x1800 || w <= 0 || h <= 0) return;           /* GL_COLOR */
+    unsigned char* b = malloc((size_t)w * h * 4);
+    if (!b) return;
+    RP(glReadPixels, X_rp)(x, y, w, h, 0x1908, 0x1401, b);
+    glDrawPixels(w, h, 0x1908, 0x1401, b);
+    free(b);
+}
+
+/* ======================= Stubs ======================= */
+GLC void glIndexi(int c) { (void)c; }
+GLC void glIndexf(float c) { (void)c; }
+GLC void glIndexd(double c) { (void)c; }
+GLC void glIndexs(short c) { (void)c; }
+GLC void glIndexub(unsigned char c) { (void)c; }
+GLC void glIndexiv(const int* c) { (void)c; }
+GLC void glIndexfv(const float* c) { (void)c; }
+GLC void glIndexdv(const double* c) { (void)c; }
+GLC void glIndexsv(const short* c) { (void)c; }
+GLC void glIndexubv(const unsigned char* c) { (void)c; }
+GLC void glClearIndex(float c) { (void)c; }
+GLC void glIndexMask(unsigned m) { (void)m; }
+GLC void glIndexPointer(unsigned t, int s, const void* p) { (void)t; (void)s; (void)p; }
+GLC void glEdgeFlagPointer(int s, const void* p) { (void)s; (void)p; }
+
+GLC int  glRenderMode(unsigned mode) { (void)mode; return 0; }       /* select/feedback: no hits */
+GLC void glSelectBuffer(int n, unsigned* b) { (void)n; (void)b; }
+GLC void glFeedbackBuffer(int n, unsigned t, float* b) { (void)n; (void)t; (void)b; }
+GLC void glPassThrough(float t) { (void)t; }
+GLC void glInitNames(void) {}
+GLC void glLoadName(unsigned n) { (void)n; }
+GLC void glPushName(unsigned n) { (void)n; }
+GLC void glPopName(void) {}
+
+GLC void glPixelTransferf(unsigned p, float v) { (void)p; (void)v; }
+GLC void glPixelTransferi(unsigned p, int v) { (void)p; (void)v; }
+GLC void glPixelMapfv(unsigned m, int n, const float* v) { (void)m; (void)n; (void)v; }
+GLC void glPixelMapuiv(unsigned m, int n, const unsigned* v) { (void)m; (void)n; (void)v; }
+GLC void glPixelMapusv(unsigned m, int n, const unsigned short* v) { (void)m; (void)n; (void)v; }
+
+GLC void glPrioritizeTextures(int n, const unsigned* t, const float* p) { (void)n; (void)t; (void)p; }
+GLC unsigned char glAreTexturesResident(int n, const unsigned* t, unsigned char* r) {
+    (void)t;
+    for (int i = 0; i < n; i++) r[i] = 1;
+    return 1;
+}
+
+/* ---------- glLineStipple: ES1 has no line stipple -> state is stored, effect is ignored ---------- */
+static __thread int      ev_ls_factor = 1;
+static __thread unsigned ev_ls_pattern = 0xFFFF;
+
+GLC void glLineStipple(int factor, unsigned short pattern) {
+    ev_ls_factor  = factor < 1 ? 1 : (factor > 256 ? 256 : factor);
+    ev_ls_pattern = pattern;
+}
+
+/* ---------- Evaluator state ---------- */
+#define EV_MAXO 16
+typedef struct { int order, k; float a, b; float* d; } ev_m1;
+typedef struct { int uo, vo, k; float u1, u2, v1, v2; float* d; } ev_m2;
+
+/* index: 0 COLOR_4, 1 INDEX, 2 NORMAL, 3 TEX_1, 4 TEX_2, 5 TEX_3, 6 TEX_4, 7 VERTEX_3, 8 VERTEX_4
+   MAP1: 0x0D90 + idx      MAP2: 0x0DB0 + idx      GL_AUTO_NORMAL: 0x0D80 */
+static const unsigned char ev_k[9] = { 4, 1, 3, 1, 2, 3, 4, 3, 4 };
+
+static __thread struct {
+    ev_m1 m1[9];
+    ev_m2 m2[9];
+    unsigned char en1[9], en2[9], autonorm;
+    int un, vn;
+    float gu1, gu2, gv1, gv2;
+    int init;
+} EV;
+
+static void ev_init(void) {
+    if (EV.init) return;
+    EV.init = 1;
+    EV.un = EV.vn = 1;
+    EV.gu1 = EV.gv1 = 0.0f;
+    EV.gu2 = EV.gv2 = 1.0f;
+}
+
+/* called from cm_cap(): return 1 = cap handled here (do not forward to ES) */
+static int ev_cap(unsigned cap, int on) {
+    if (cap >= 0x0D90 && cap <= 0x0D98) { EV.en1[cap - 0x0D90] = (unsigned char)(on != 0); return 1; }
+    if (cap >= 0x0DB0 && cap <= 0x0DB8) { EV.en2[cap - 0x0DB0] = (unsigned char)(on != 0); return 1; }
+    if (cap == 0x0D80)                  { EV.autonorm = (unsigned char)(on != 0);           return 1; }
+    return 0;
+}
+
+/* ---------- Bernstein basis ---------- */
+static void ev_bern(int order, float t, float* B) {
+    B[0] = 1.0f;
+    for (int j = 1; j < order; j++) {
+        float saved = 0.0f;
+        for (int k = 0; k < j; k++) {
+            float tmp = B[k];
+            B[k] = saved + (1.0f - t) * tmp;
+            saved = t * tmp;
+        }
+        B[j] = saved;
+    }
+}
+
+static void ev_bernd(int order, float t, float* B, float* D) {
+    ev_bern(order, t, B);
+    if (order < 2) { D[0] = 0.0f; return; }
+    float L[EV_MAXO];
+    int n = order - 1;
+    ev_bern(order - 1, t, L);
+    for (int i = 0; i < order; i++)
+        D[i] = (float)n * ((i > 0 ? L[i - 1] : 0.0f) - (i < n ? L[i] : 0.0f));
+}
+
+/* ---------- glMap1 / glMap2 ---------- */
+static void ev_map1(unsigned target, float u1, float u2, int stride, int order, const void* p, int dbl) {
+    ev_init();
+    unsigned i = target - 0x0D90;
+    if (i > 8 || order < 1 || order > EV_MAXO || u1 == u2 || stride < 0 || !p) return;
+    int k = ev_k[i];
+    float* d = malloc((size_t)order * k * sizeof(float));
+    if (!d) return;
+    for (int o = 0; o < order; o++)
+        for (int c = 0; c < k; c++)
+            d[o * k + c] = dbl ? (float)((const double*)p)[(size_t)o * stride + c]
+                               :        ((const float*) p)[(size_t)o * stride + c];
+    free(EV.m1[i].d);
+    EV.m1[i] = (ev_m1){ order, k, u1, u2, d };
+}
+
+static void ev_map2(unsigned target, float u1, float u2, int us, int uo,
+                    float v1, float v2, int vs, int vo, const void* p, int dbl) {
+    ev_init();
+    unsigned i = target - 0x0DB0;
+    if (i > 8 || uo < 1 || vo < 1 || uo > EV_MAXO || vo > EV_MAXO || u1 == u2 || v1 == v2 ||
+        us < 0 || vs < 0 || !p) return;
+    int k = ev_k[i];
+    float* d = malloc((size_t)uo * vo * k * sizeof(float));
+    if (!d) return;
+    for (int a = 0; a < uo; a++)
+        for (int b = 0; b < vo; b++)
+            for (int c = 0; c < k; c++) {
+                size_t src = (size_t)a * us + (size_t)b * vs + c;
+                d[((size_t)a * vo + b) * k + c] = dbl ? (float)((const double*)p)[src]
+                                                       :        ((const float*) p)[src];
+            }
+    free(EV.m2[i].d);
+    EV.m2[i] = (ev_m2){ uo, vo, k, u1, u2, v1, v2, d };
+}
+
+GLC void glMap1f(unsigned t, float u1, float u2, int stride, int order, const float* p)
+    { ev_map1(t, u1, u2, stride, order, p, 0); }
+GLC void glMap1d(unsigned t, double u1, double u2, int stride, int order, const double* p)
+    { ev_map1(t, (float)u1, (float)u2, stride, order, p, 1); }
+GLC void glMap2f(unsigned t, float u1, float u2, int us, int uo, float v1, float v2, int vs, int vo, const float* p)
+    { ev_map2(t, u1, u2, us, uo, v1, v2, vs, vo, p, 0); }
+GLC void glMap2d(unsigned t, double u1, double u2, int us, int uo, double v1, double v2, int vs, int vo, const double* p)
+    { ev_map2(t, (float)u1, (float)u2, us, uo, (float)v1, (float)v2, vs, vo, p, 1); }
+
+/* ---------- Evaluation ---------- */
+static void ev_eval1(int i, float u, float* out) {
+    const ev_m1* m = &EV.m1[i];
+    float B[EV_MAXO], t = (u - m->a) / (m->b - m->a);
+    ev_bern(m->order, t, B);
+    for (int c = 0; c < 4; c++) out[c] = 0.0f;
+    for (int o = 0; o < m->order; o++)
+        for (int c = 0; c < m->k; c++) out[c] += B[o] * m->d[o * m->k + c];
+}
+
+/* out = value; du/dv = partial derivatives wrt normalized params (may be NULL) */
+static void ev_eval2(int i, float u, float v, float* out, float* du, float* dv) {
+    const ev_m2* m = &EV.m2[i];
+    float Bu[EV_MAXO], Bv[EV_MAXO], Du[EV_MAXO], Dv[EV_MAXO];
+    float tu = (u - m->u1) / (m->u2 - m->u1), tv = (v - m->v1) / (m->v2 - m->v1);
+    if (du && dv) { ev_bernd(m->uo, tu, Bu, Du); ev_bernd(m->vo, tv, Bv, Dv); }
+    else          { ev_bern(m->uo, tu, Bu);      ev_bern(m->vo, tv, Bv); }
+    for (int c = 0; c < 4; c++) { out[c] = 0.0f; if (du) du[c] = dv[c] = 0.0f; }
+    for (int a = 0; a < m->uo; a++)
+        for (int b = 0; b < m->vo; b++) {
+            const float* P = m->d + ((size_t)a * m->vo + b) * m->k;
+            float w = Bu[a] * Bv[b];
+            for (int c = 0; c < m->k; c++) {
+                out[c] += w * P[c];
+                if (du) { du[c] += Du[a] * Bv[b] * P[c]; dv[c] += Bu[a] * Dv[b] * P[c]; }
+            }
+        }
+}
+
+static void ev_texcoord(int i, const float* o) { glTexCoord2f(o[0], ev_k[i] > 1 ? o[1] : 0.0f); }
+
+GLC void glEvalCoord1f(float u) {
+    ev_init();
+    float o[4];
+    if (EV.en1[0] && EV.m1[0].d) { ev_eval1(0, u, o); glColor4f(o[0], o[1], o[2], o[3]); }
+    if (EV.en1[2] && EV.m1[2].d) { ev_eval1(2, u, o); glNormal3f(o[0], o[1], o[2]); }
+    for (int i = 6; i >= 3; i--)
+        if (EV.en1[i] && EV.m1[i].d) { ev_eval1(i, u, o); ev_texcoord(i, o); break; }
+    if (EV.en1[8] && EV.m1[8].d) {
+        ev_eval1(8, u, o);
+        float w = o[3] != 0.0f ? o[3] : 1.0f;
+        glVertex3f(o[0] / w, o[1] / w, o[2] / w);
+    } else if (EV.en1[7] && EV.m1[7].d) {
+        ev_eval1(7, u, o);
+        glVertex3f(o[0], o[1], o[2]);
+    }
+}
+
+GLC void glEvalCoord2f(float u, float v) {
+    ev_init();
+    float o[4];
+    if (EV.en2[0] && EV.m2[0].d) { ev_eval2(0, u, v, o, NULL, NULL); glColor4f(o[0], o[1], o[2], o[3]); }
+    if (EV.en2[2] && EV.m2[2].d) { ev_eval2(2, u, v, o, NULL, NULL); glNormal3f(o[0], o[1], o[2]); }
+    for (int i = 6; i >= 3; i--)
+        if (EV.en2[i] && EV.m2[i].d) { ev_eval2(i, u, v, o, NULL, NULL); ev_texcoord(i, o); break; }
+
+    int vi = (EV.en2[8] && EV.m2[8].d) ? 8 : (EV.en2[7] && EV.m2[7].d) ? 7 : -1;
+    if (vi < 0) return;
+    int an = EV.autonorm && !(EV.en2[2] && EV.m2[2].d);
+    float du[4], dv[4];
+    ev_eval2(vi, u, v, o, an ? du : NULL, an ? dv : NULL);
+    float x = o[0], y = o[1], z = o[2];
+    if (vi == 8) {
+        float w = o[3] != 0.0f ? o[3] : 1.0f;
+        x /= w; y /= w; z /= w;
+        if (an) {                                   /* quotient rule: d(P/w) = (dP - P*dw) / w */
+            for (int c = 0; c < 3; c++) {
+                du[c] = (du[c] - (o[c] / w) * du[3]) / w;
+                dv[c] = (dv[c] - (o[c] / w) * dv[3]) / w;
+            }
+        }
+    }
+    if (an) {
+        float nx = du[1] * dv[2] - du[2] * dv[1];
+        float ny = du[2] * dv[0] - du[0] * dv[2];
+        float nz = du[0] * dv[1] - du[1] * dv[0];
+        float l2 = nx * nx + ny * ny + nz * nz;
+        if (l2 > 1e-24f) {
+            float il = 1.0f / sqrtf(l2);
+            glNormal3f(nx * il, ny * il, nz * il);
+        }
+    }
+    glVertex3f(x, y, z);
+}
+
+GLC void glEvalCoord1d(double u)           { glEvalCoord1f((float)u); }
+GLC void glEvalCoord1fv(const float* u)    { glEvalCoord1f(u[0]); }
+GLC void glEvalCoord1dv(const double* u)   { glEvalCoord1f((float)u[0]); }
+GLC void glEvalCoord2d(double u, double v) { glEvalCoord2f((float)u, (float)v); }
+GLC void glEvalCoord2fv(const float* u)    { glEvalCoord2f(u[0], u[1]); }
+GLC void glEvalCoord2dv(const double* u)   { glEvalCoord2f((float)u[0], (float)u[1]); }
+
+/* ---------- Grids + meshes ---------- */
+GLC void glMapGrid1f(int un, float u1, float u2) {
+    ev_init();
+    if (un < 1) return;
+    EV.un = un; EV.gu1 = u1; EV.gu2 = u2;
+}
+GLC void glMapGrid1d(int un, double u1, double u2) { glMapGrid1f(un, (float)u1, (float)u2); }
+GLC void glMapGrid2f(int un, float u1, float u2, int vn, float v1, float v2) {
+    ev_init();
+    if (un < 1 || vn < 1) return;
+    EV.un = un; EV.gu1 = u1; EV.gu2 = u2;
+    EV.vn = vn; EV.gv1 = v1; EV.gv2 = v2;
+}
+GLC void glMapGrid2d(int un, double u1, double u2, int vn, double v1, double v2)
+    { glMapGrid2f(un, (float)u1, (float)u2, vn, (float)v1, (float)v2); }
+
+static float ev_gu(int i) { return i == EV.un ? EV.gu2 : EV.gu1 + (float)i * (EV.gu2 - EV.gu1) / (float)EV.un; }
+static float ev_gv(int j) { return j == EV.vn ? EV.gv2 : EV.gv1 + (float)j * (EV.gv2 - EV.gv1) / (float)EV.vn; }
+
+GLC void glEvalPoint1(int i)        { ev_init(); glEvalCoord1f(ev_gu(i)); }
+GLC void glEvalPoint2(int i, int j) { ev_init(); glEvalCoord2f(ev_gu(i), ev_gv(j)); }
+
+GLC void glEvalMesh1(unsigned mode, int i1, int i2) {
+    ev_init();
+    if (mode != 0x1B00 && mode != 0x1B01) return;           /* GL_POINT / GL_LINE */
+    glBegin(mode == 0x1B00 ? 0 /*POINTS*/ : 3 /*LINE_STRIP*/);
+    for (int i = i1; i <= i2; i++) glEvalCoord1f(ev_gu(i));
+    glEnd();
+}
+
+GLC void glEvalMesh2(unsigned mode, int i1, int i2, int j1, int j2) {
+    ev_init();
+    if (mode == 0x1B00) {                                    /* GL_POINT */
+        glBegin(0);
+        for (int j = j1; j <= j2; j++)
+            for (int i = i1; i <= i2; i++) glEvalCoord2f(ev_gu(i), ev_gv(j));
+        glEnd();
+    } else if (mode == 0x1B01) {                             /* GL_LINE */
+        for (int j = j1; j <= j2; j++) {
+            glBegin(3);
+            for (int i = i1; i <= i2; i++) glEvalCoord2f(ev_gu(i), ev_gv(j));
+            glEnd();
+        }
+        for (int i = i1; i <= i2; i++) {
+            glBegin(3);
+            for (int j = j1; j <= j2; j++) glEvalCoord2f(ev_gu(i), ev_gv(j));
+            glEnd();
+        }
+    } else if (mode == 0x1B02) {                             /* GL_FILL */
+        for (int j = j1; j < j2; j++) {
+            glBegin(8);                                      /* QUAD_STRIP */
+            for (int i = i1; i <= i2; i++) {
+                glEvalCoord2f(ev_gu(i), ev_gv(j));
+                glEvalCoord2f(ev_gu(i), ev_gv(j + 1));
+            }
+            glEnd();
+        }
+    }
+}

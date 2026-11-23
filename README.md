@@ -6,21 +6,22 @@ To run **OpenArena** on this fork, follow the [native Termux setup](tests/demos.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
-### More info
+## Overview
 
-A zero-copy Window System Integration (WSI) layer that allows Desktop Linux applications (X11, KDE, Minecraft, Firefox) to run natively on Android's proprietary ARM Mali GPU, **without root** and **without Mesa/Zink**.
+A zero-copy Window System Integration (WSI) layer that lets desktop Linux
+applications (X11, KDE, Minecraft, Firefox) run on Android’s proprietary
+ARM Mali GPU, **without root** and **without Mesa/Zink**.
 
 ### Tested GPUs
 
-Mali-G52 MC2, Mali-G72, Mali-G77 and Mali-G78.
-
-### Testes who helped
-
-Mostly those people was on Discord
-
-* **Users and GPU:** (@saicharankandukuri) Zman tested with: **Mali-G72 Mali-G78**; @nonameforidea tested with: **Mali-G72**; (@bullymaguire0024) BullyMaguire tested with: **Mali-G77 MC9**
+| GPU | Testers (Discord) |
+|-----|-------------------|
+| Mali-G52 MC2 | ZenFox3 |
+| Mali-G72, Mali-G78 | @saicharankandukuri (Zman) |
+| Mali-G72 | @nonameforidea |
+| Mali-G77 MC9 | @bullymaguire0024 (BullyMaguire) |
 
 ## Contents
 
@@ -43,30 +44,30 @@ Mostly those people was on Discord
 
 | Library | Path | Output | Summary |
 |---|---|---|---|
-| Vulkan | `Xcb/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
-| OpenGL | `Xcb/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.3 emulated on GLES |
-| GLFW | `Xcb/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
-| GLU | `Xcb/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
-| GLUT | `Xcb/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
-| GBM | `Xcb/EGL/GBM` | `libgbm.so.1` | GBM over AHardwareBuffer |
-| DRM | `Xcb/drm` | `libdrm.so.2` | Kernel-less DRM/KMS emulation |
-| VA-API | `Xcb/dri` | `ahb_drv_video.so` | Video decode via AMediaCodec |
-| GLES | `Xcb/GLES` | `libGLESv2.so.2` | GLES 1.x/2.0/3.x over the Mali blob, zero-copy AHB + DRI3 |
-| EGL | `Xcb/EGL` | `libEGL.so.1` | EGL over the Mali blob: X11, XCB, GBM, surfaceless; zero-copy AHB + DRI3 |
+| Vulkan | `API/Vulkan` | `libvulkan.so.1` | Mali driver loader plus XCB WSI |
+| OpenGL | `API/GL` | `libGL.so.1` | GLX 1.4 over EGL, desktop GL 1.x–4.6 emulated on GLES, SPIR-V via SPIRV-Cross |
+| GLFW | `API/GL/GLFW` | `libglfw.so.3` | GLFW 3.6 on xcb + EGL |
+| GLU | `API/GL/GLU` | `libGLU.so.1` | GLU 1.3, self-contained |
+| GLUT | `API/GL/GLUT` | `libglut.so.3` | Small GLUT on Xlib + GLX |
+| GBM | `API/EGL/GBM` | `libgbm.so.1` | GBM over AHardwareBuffer |
+| DRM | `API/drm` | `libdrm.so.2` | Kernel-less DRM/KMS emulation |
+| VA-API | `API/dri` | `ahb_drv_video.so` | Video decode via AMediaCodec |
+| GLES | `API/GLES` | `libGLESv2.so.2` | GLES 1.x/2.0/3.x over the Mali blob, zero-copy AHB + DRI3 |
+| EGL | `API/EGL` | `libEGL.so.1` | EGL over the Mali blob: X11, XCB, GBM, surfaceless; zero-copy AHB + DRI3 |
 
 
 Repository layout:
 
-    Xcb/Vulkan/        Vulkan loader, WSI, and shims
-    Xcb/GL/            Desktop OpenGL, GLX, and EGL shims
-    Xcb/GLES/          GLES 1.x/2.x/3.x shim (zero-copy WSI)
-    Xcb/EGL/           EGL shim (X11/XCB/GBM platforms)
-    Xcb/GL/GLFW/       Custom GLFW 3.6 implementation
-    Xcb/GL/GLU/        Custom GLU 1.3 implementation
-    Xcb/GL/GLUT/       Custom GLUT implementation
-    Xcb/EGL/GBM/       GBM over AHardwareBuffer
-    Xcb/drm/           Kernel-less DRM/KMS emulation
-    Xcb/dri/           VA-API driver (MediaCodec backend)
+    API/Vulkan/        Vulkan loader, WSI, and shims
+    API/GL/            Desktop OpenGL, GLX, and EGL shims
+    API/GLES/          GLES 1.x/2.x/3.x shim (zero-copy WSI)
+    API/EGL/           EGL shim (X11/XCB/GBM platforms)
+    API/GL/GLFW/       Custom GLFW 3.6 implementation
+    API/GL/GLU/        Custom GLU 1.3 implementation
+    API/GL/GLUT/       Custom GLUT implementation
+    API/EGL/GBM/       GBM over AHardwareBuffer
+    API/drm/           Kernel-less DRM/KMS emulation
+    API/dri/           VA-API driver (MediaCodec backend)
     src/               Bundled third-party code (libtess2, GLFW headers, bcdec)
     makefile           Build orchestration
 
@@ -84,7 +85,7 @@ Each library section below lists its own dependencies and options.
 
 ## Vulkan
 
-Path: `Xcb/Vulkan`
+Path: `API/Vulkan`
 
 A drop-in replacement for `libvulkan.so.1`. It loads the Mali driver through
 the Android HAL (SPHAL) and adds an XCB WSI layer on top (swapchain,
@@ -202,11 +203,13 @@ driver as the last link.
 
 ## OpenGL
 
-Path: `Xcb/GL`
+Path: `API/GL`
 
 A `libGL.so.1` that provides GLX 1.4 on top of the EGL shim and emulates
-desktop OpenGL (1.x up to 4.3 core/compat) over the GLES that Mali offers.
+desktop OpenGL (1.x up to 4.6 core and 3.2 compat) over the GLES that Mali offers.
 It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
+SPIR-V shaders (`GL_ARB_gl_spirv`, core in 4.6) are converted to GLSL ES with
+SPIRV-Cross.
 
 ### Layout
 
@@ -217,6 +220,16 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 - `Scripts/gl_es_emul.c` – version/extension strings, GLSL → GLSL ES
   translation, S3TC/RGTC/BPTC upload handling (GPU decode with CPU fallback),
   1D textures, misc. missing calls
+- `Scripts/gl_spirv.c` – `GL_ARB_gl_spirv`: `glShaderBinary` (SPIR-V format)
+  and `glSpecializeShader`, SPIR-V → GLSL ES 3.20 through the SPIRV-Cross C API
+- `Scripts/gl_dsa.c` – `ARB_direct_state_access` (GL 4.5): `glCreate*`,
+  `glNamed*`, `glTexture*`, `glVertexArray*` ... as bind → call → restore over
+  ES 3.2, plus `glGetQueryBufferObject*`
+- `Scripts/gl_gl46.c` – the rest of GL 4.5/4.6 that is not DSA:
+  `glMultiDraw{Arrays,Elements}IndirectCount`, `glPolygonOffsetClamp`,
+  `glTextureBarrier`, `glGetTextureSubImage`, `glGetnTexImage`,
+  `glGetnUniformdv`, and the `glBindBuffer` wrapper that tracks
+  `GL_PARAMETER_BUFFER`
 - `Scripts/gl_dt_bridge.cpp` – C++ bridge to `Include/gl_desktop_texture.h`:
   compute-shader decoding of BC1/BC2/BC3/BC6H/BC7 for compressed texture
   uploads. Compiled separately and linked into `libGL.so.1`
@@ -233,15 +246,24 @@ It also exports all `gl*` functions (it embeds `libGLESv2_shim.c`).
 
 ### Dependencies
 
-    pkg install clang make libxcb libx11 libglvnd
+    pkg install clang make libxcb libx11 libglvnd spirv-cross
 
-Also needs `src/bcdec` (bundled, CPU decoder), `Xcb/GLES/Include/gles_list.h`
+Also needs `src/bcdec` (bundled, CPU decoder), `API/GLES/Include/gles_list.h`
 and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 (`clang++`) and `libc++`. `libX11` and `libX11-xcb` are loaded with `dlopen`.
+
+SPIRV-Cross must provide its C API (`spirv_cross/spirv_cross_c.h`) and either
+the static archives (`libspirv-cross-*.a`) or `libspirv-cross-c-shared.so`.
+It is linked into `libGL.so.1` and its symbols are not exported.
 
 ### Build
 
     make gl                # build/libGL.so.1 (also builds build/gl/gl_dt_bridge.o)
+
+SPIRV-Cross is linked statically by default (`SPV_LIBS` in the makefile). To
+link the shared library instead:
+
+    make gl SPV_LIBS=-lspirv-cross-c-shared
 
 ### Usage
 
@@ -252,13 +274,13 @@ and the EGL shim at runtime. The GPU BC decoder needs a C++17 compiler
 | Source (in priority order) | Result |
 |---|---|
 | `GLX_ES=1\|2\|3` | forced |
-| `GLX_GL` (e.g. `21`, `33`, `44`) | `<20` → ES1, `>=30` → ES3 |
+| `GLX_GL` (e.g. `21`, `33`, `46`) | `<20` → ES1, `>=30` → ES3 |
 | `glXCreateContextAttribsARB` | ES profile, or major 1 → ES1, major ≥3 → ES3 |
 | Imported symbols of the app | fixed-function only → ES1, shaders → ES2/3 |
 | Fallback | ES2 (`GLX_DEFAULT_ES=3` for ES3) |
 
 Fixed-function applications run on ES1; shader applications on ES3, with
-the reported version up to GL 4.4.
+the reported version up to GL 4.6.
 
 ### Environment variables
 
@@ -270,10 +292,11 @@ the reported version up to GL 4.4.
 | `GLX_HIDE_EXT="A,B"` | Hide extensions from the application |
 | `GLX_NO_GPU_BC=1` | Disable GPU BC decoding, use the CPU decoder (bcdec) for all formats |
 | `GLX_NO_LITFIX=1` | Disable the int→float literal repair |
-| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off` |
+| `GL_DEBUG=1` | Verbose logging (`MALI_DEBUG`, `EGL_DEBUG` also work); shows `GPU BC decode: on/off`, and every 5 s the `GLX_EXT_texture_from_pixmap` bind statistics (binds, sub/full uploads, MB, average ms) |
+| `vblank_mode=0` | Mesa-compatible: start windows with swap interval 0 (no vsync, tearing possible). The application can still change it with `glXSwapInterval*` |
 | `GLX_DEBUG=1` | Log the auto ES detection |
 | `GLX_TRACE=1` | Log `glGetIntegerv`/`glGetStringi` queries on stdout |
-| `GLX_SHADER_DUMP=1` | Print shaders sent to Mali |
+| `GLX_SHADER_DUMP=1` | Print shaders sent to Mali (also the GLSL ES generated from SPIR-V) |
 | `GLX_DUMP_TEXT=1` | Save WebRender text shaders to `$TMPDIR` |
 | `GLX_DSB_DEBUG=1`, `GLX_DSB_TEST=1..5` | Dual-source blending debug / test modes |
 | `GLX_DRAWLOG=<n>\|text\|swap\|fb0` | Log unique draw-state signatures |
@@ -294,6 +317,19 @@ the reported version up to GL 4.4.
   `sampler2DRect`, `sampler1DArray`, `gl_ClipDistance` and dual-source
   outputs are rewritten. Shaders that fail on int→float conversions are
   recompiled with promoted literals.
+- **SPIR-V (`GL_ARB_gl_spirv`):** `glShaderBinary` with
+  `GL_SHADER_BINARY_FORMAT_SPIR_V` stores the module; `glSpecializeShader`
+  converts it to GLSL ES 3.20 with SPIRV-Cross (separate textures and samplers
+  are combined, descriptor sets are stripped, specialization constants are
+  applied) and compiles it on Mali. The stage comes from the shader object.
+  Other binary formats go to the driver. If the conversion fails the shader
+  simply fails to compile and the reason is printed on stderr.
+- **GL 4.5 / 4.6:** `ARB_direct_state_access` is emulated by binding the
+  object, calling the ES function and restoring the binding; texture targets
+  are tracked from `glCreateTextures` and `glBindTexture`.
+  `glMultiDraw*IndirectCount` reads the count from the parameter buffer on the
+  CPU and loops over `glDraw*Indirect`; `GL_PARAMETER_BUFFER` is tracked by the
+  shim because ES cannot bind it.
 - **Textures:** uploads of BC1 with alpha, BC2, BC3 (S3TC) and BC6H, BC7
   (BPTC) are decoded on the GPU by compute shaders (ES 3.1+ contexts):
   the blocks go to an SSBO, are decoded into a temporary RGBA8 / SRGB8_A8 /
@@ -321,11 +357,85 @@ the reported version up to GL 4.4.
   GPU path creates a temporary texture and buffer per upload. The 2D upload
   path is covered by tests; sub-image, 3D/array and PBO uploads use the same
   code but are less tested. Use `GLX_NO_GPU_BC=1` to compare with the CPU path.
+- SPIR-V: specialization constants are passed as raw 32-bit values, no
+  SPIR-V extensions are reported (`GL_NUM_SPIR_V_EXTENSIONS` is 0), and
+  features that GLSL ES 3.20 lacks (for example `double`) cannot be converted.
+- GL 4.5/4.6 gaps: `glPolygonOffsetClamp` ignores the clamp value; indirect
+  draws need `baseInstance` = 0 in the commands (an ES limit); 
+  `glGetTextureSubImage` only reads RGBA with `UNSIGNED_BYTE` or `FLOAT`;
+  `glGetCompressedTexImage`, `glGetCompressedTextureImage` and
+  `glGetCompressedTextureSubImage` do nothing (ES cannot read back compressed
+  data); `glTextureBarrier` is a memory barrier; the `GL_QUERY_BUFFER` binding
+  is not emulated.
+- Advertised only: `GL_ARB_cull_distance`, `GL_ARB_derivative_control`,
+  `GL_ARB_shader_group_vote`, `GL_ARB_shader_atomic_counter_ops`,
+  `GL_ARB_pipeline_statistics_query`, `GL_ARB_transform_feedback_overflow_query`,
+  `GL_ARB_conditional_render_inverted` and `GL_KHR_no_error` are listed so that
+  GL 4.5/4.6 feature checks (for example `glewinfo`) pass, but they have no
+  real implementation. Hide them with `GLX_HIDE_EXT` if an application
+  misbehaves.
 - Do not load this together with `libGLESv2.so.2` in the same process.
-
+- `GLX_EXT_texture_from_pixmap`: Mali has no `EGL_KHR_image_pixmap`, so
+  `glXBindTexImageEXT` reads the X pixmap back with `xcb_get_image` and
+  uploads it with `glTexImage2D` (a copy on every bind, not zero-copy).
+  Only `GL_TEXTURE_2D` is supported: no `GL_TEXTURE_RECTANGLE` or 1D targets,
+  no mipmapped pixmaps (`GLX_BIND_TO_MIPMAP_TEXTURE_EXT` is 0) and no
+  `GLX_FRONT_RIGHT/BACK/AUX` buffers. Rendering to a GLX pixmap while it is
+  bound is not reflected until the next bind.
+- GLX pixmaps are EGL pbuffers copied back to the X pixmap with `xcb_put_image`
+  on `glFlush`/`glFinish`/`glXWaitGL`/`glXSwapBuffers`/context switch.
+  This is slow for large pixmaps and not suited to per-frame use.
+- `GLX_EXT_buffer_age` is reported only on the dmabuf present path (age 1,
+  since the swap acts as a copy). The legacy WSI fallback, pixmaps and
+  pbuffers report 0, so applications redraw the whole frame. Querying a
+  drawable that is not current returns 0 instead of raising `GLXBadDrawable`.
+- `GLX_EXT_swap_control_tear` is advertised but adaptive vsync does not exist:
+  a negative interval behaves as plain vsync. The swap interval applies to the
+  current surface, not to the drawable passed to `glXSwapIntervalEXT`, so call
+  it with the context current. `GLX_MAX_SWAP_INTERVAL_EXT` is a nominal value;
+  intervals above 1 behave as 1.
+- `GLX_SGIX_fbconfig` entry points are aliases of the GLX 1.3 ones.
+  `GLX_ARB_create_context_no_error` and `GLX_ARB_context_flush_control` are
+  advertised only; their attributes are ignored.
+- GLX always exposes one visual (the root visual, or a 32-bit ARGB one) and
+  one screen. `glXCopyContext` and `glXSelectEvent` are no-ops, and
+  `GLX_DRAWABLE_TYPE` always reports window, pixmap and pbuffer, even for
+  configs that lack `EGL_PBUFFER_BIT`.
+- Mailbox / no-vsync presenting (`SHIM_MAILBOX=1`, or swap interval 0 with
+  `EGL_SWAP_TEARING_HINT_VSYNC_EXT`) does not limit the frame rate by itself.
+  The application keeps rendering as fast as the GPU allows, and every frame
+  still costs a GPU blit and a fence wait. Frames are only dropped when all
+  present buffers are still busy, so if the display or the X server cannot
+  consume frames that fast, most of the work is wasted and CPU/GPU load,
+  heat and battery use stay high. The FPS shown by the application counts
+  `glXSwapBuffers` calls, including dropped frames, so it can be much higher
+  than what reaches the screen. Use `SHIM_STATS=1` to see the real
+  presented/dropped counts. Cap the frame rate in the application, or keep
+  vsync on, for anything heavy. Swap interval 0 without mailbox presents
+  asynchronously and can tear.
+- If a swap or fence wait takes longer than `SHIM_STALL_MS` (default 250 ms),
+  the shim forces vsync on that surface to recover, so a very slow frame can
+  silently turn a no-vsync setup back into a vsynced one.
+- Running without vsync can overload the whole device, not just the
+  application. Mailbox mode (`SHIM_MAILBOX=1`) with glmark2 at 1920x1080 and
+  the default sync mode froze the Termux:X11 UI until the process was
+  stopped with Ctrl+C. At 800x600 it only caused some stutter. With
+  `SHIM_SYNC=implicit` the same 1920x1080 test showed some stutter but the UI
+  stayed stable, so the sync mode matters as well as the resolution. The
+  exact bottleneck (GPU, X server or compositor) was not identified, and
+  other devices or drivers may behave differently.
+  The shim bounds the number of frames in flight (`SHIM_BUFFERS`, 4 by default,
+  8 at most), but the bound is not absolute: if the server stops sending
+  `IDLE_NOTIFY` events, the shim stops waiting after 300 ms and presents
+  without waiting for free buffers. Keep vsync on for heavy or untested
+  applications, especially at high resolutions, try `SHIM_SYNC=implicit` if
+  no-vsync freezes the UI, and check the real presented/dropped rates with
+  `SHIM_STATS=1`. If the UI freezes, stop the application from a terminal
+  (Ctrl+C or `kill`).
+  
 ## GLFW
 
-Path: `Xcb/GL/GLFW`
+Path: `API/GL/GLFW`
 
 A custom GLFW 3.6 implementation for Termux:X11 on Mali GPUs. It uses pure
 xcb (no Xlib), xkbcommon for keyboard input and EGL for contexts.
@@ -381,7 +491,7 @@ constants this build needs, so the headers are bundled in `src/glfw`.
 
 ## GLU
 
-Path: `Xcb/GL/GLU`
+Path: `API/GL/GLU`
 
 A self-contained implementation of GLU 1.3 for Termux. It has no X11 or
 Mali-specific code and only needs an OpenGL library underneath.
@@ -431,7 +541,7 @@ Mali-specific code and only needs an OpenGL library underneath.
 
 ## GLUT
 
-Path: `Xcb/GL/GLUT`
+Path: `API/GL/GLUT`
 
 A small GLUT implementation ("mglut") on top of Xlib and GLX. It runs on
 any X server (Termux:X11) with a GLX-capable `libGL`.
@@ -477,8 +587,11 @@ any X server (Termux:X11) with a GLX-capable `libGL`.
 
 ## Roadmap
 
-- Separate backends for Wayland and Win32.
-- Refinement of the Desktop GL shim (fixing edge cases in complex GLSL shaders and depth buffer precision).
+- Adding supports display for Wayland and Win32.
+- fixing issues on blender crashing without clue
+- real implementations for the OpenGL 4.6 extensions that are only advertised
+  today (see the OpenGL limitations)
+- and much more!
 
 ## Notes from Arm engineers
 
@@ -552,7 +665,7 @@ signaled.
 
 ## GBM
 
-Path: `Xcb/EGL/GBM`
+Path: `API/EGL/GBM`
 
 A `libgbm.so.1` replacement that allocates buffers as Android
 `AHardwareBuffer`s instead of using Mesa. It lets EGL/X11 code that expects
@@ -611,7 +724,7 @@ GBM run on the Mali blob.
 
 ## GLES
 
-Path: `Xcb/GLES`
+Path: `API/GLES`
 
 A GLES 1.x / 2.0 / 3.x shim over the Mali blob. All GLES entry points are
 forwarded to the vendor driver; on top of that, a direct WSI presents the
@@ -621,7 +734,7 @@ frames through DRI3/Present with no CPU copy.
 
 - `Scripts/libGLESv2_shim.c` – trampolines, WSI, swap logic
 - `Include/gles_list.h` – list of forwarded GLES functions
-- `Xcb/EGL/Include/mali_sphal.h` – Mali driver loader (shared with EGL)
+- `API/EGL/Include/mali_sphal.h` – Mali driver loader (shared with EGL)
 
 ### Dependencies
 
@@ -687,7 +800,7 @@ and `libGLESv1_CM.so` are symlinks to it.
 
 ## EGL
 
-Path: `Xcb/EGL`
+Path: `API/EGL`
 
 A `libEGL.so.1` that wraps the Mali blob and adds X11 window surfaces.
 Applications can create windows with Xlib or xcb, or render through GBM,
@@ -782,7 +895,7 @@ without an EGL X11 platform in the driver.
 
 ## DRM
 
-Path: `Xcb/drm`
+Path: `API/drm`
 
 A kernel-less `libdrm.so.2`. Buffers are backed by `AHardwareBuffer`, and
 the KMS side (one CRTC, one connector, one plane) is emulated in
@@ -848,7 +961,7 @@ devices.
 
 ## VA-API driver
 
-Path: `Xcb/dri`
+Path: `API/dri`
 
 A VA-API driver (`ahb_drv_video.so`) that decodes video with Android's
 `AMediaCodec` and stores frames in `AHardwareBuffer` surfaces. It lets
@@ -923,3 +1036,6 @@ VA-API applications (mpv, ffmpeg, ...) use the phone's hardware decoder.
 - `src/bcdec` – [bcdec](https://github.com/iOrange/bcdec) by iOrange, BC1-BC7
   texture decoder, used by the OpenGL shim for S3TC/RGTC/BPTC decoding.
   Dual-licensed: MIT or Public Domain/Unlicense (see `src/bcdec/LICENSE`).
+- [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) – not bundled;
+  linked from the system package by the OpenGL shim for SPIR-V → GLSL ES
+  conversion. See its repository for the license.

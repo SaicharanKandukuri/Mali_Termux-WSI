@@ -25,7 +25,7 @@
 /* Funcții noi adăugate pentru Dual-Source Blending și Pipeline Management */
 #define glBlendFunc                glx_ovr_glBlendFunc
 #define glBlendFuncSeparate        glx_ovr_glBlendFuncSeparate
-#define glBlendFunci               glx_ovr_glBlendFunci  /* <--- Adăugat aici */
+#define glBlendFunci               glx_ovr_glBlendFunci  
 #define glBlendEquation            glx_ovr_glBlendEquation
 #define glBlendEquationSeparate    glx_ovr_glBlendEquationSeparate
 #define glBlendColor               glx_ovr_glBlendColor
@@ -85,14 +85,32 @@
 #define glAttachShader             glx_ovr_glAttachShader
 #define glDetachShader             glx_ovr_glDetachShader
 #define glLinkProgram              glx_ovr_glLinkProgram
-#define glBindTransformFeedback   glx_ovr_glBindTransformFeedback
-#define glBeginTransformFeedback  glx_ovr_glBeginTransformFeedback
-#define glEndTransformFeedback    glx_ovr_glEndTransformFeedback
+#define glBindTransformFeedback    glx_ovr_glBindTransformFeedback
+#define glBeginTransformFeedback   glx_ovr_glBeginTransformFeedback
+#define glEndTransformFeedback     glx_ovr_glEndTransformFeedback
 #define glGetFramebufferAttachmentParameteriv glx_ovr_glGetFramebufferAttachmentParameteriv
-#define glGetInternalformativ glx_ovr_glGetInternalformativ
+#define glGetInternalformativ      glx_ovr_glGetInternalformativ
+#define glBindBufferBase           glx_ovr_glBindBufferBase
+#define glBindBufferRange          glx_ovr_glBindBufferRange
+#define glDrawBuffers              glx_ovr_glDrawBuffers
+#define glVertexPointer   glx_ovr_glVertexPointer
+#define glColorPointer    glx_ovr_glColorPointer
+#define glTexCoordPointer glx_ovr_glTexCoordPointer
+#define glNormalPointer   glx_ovr_glNormalPointer
+#define glShaderBinary glx_ovr_glShaderBinary
+#define glBindBuffer glx_ovr_glBindBuffer
 
 #include "libGLESv2_shim.c"
 
+#undef glBindBuffer
+#undef glShaderBinary
+#undef glVertexPointer
+#undef glColorPointer
+#undef glTexCoordPointer
+#undef glNormalPointer
+#undef glDrawBuffers
+#undef glBindBufferRange
+#undef glBindBufferBase
 #undef glGetInternalformativ
 #undef glGetFramebufferAttachmentParameteriv
 #undef glEndTransformFeedback
@@ -724,6 +742,7 @@ GLX_EXPORT int glXMakeContextCurrent(void* dpy, glx_xid draw, glx_xid read, void
     if (!eglMakeCurrent(ed, s, s, c->ectx)) return 0;
     T_glx.ctx = c; T_glx.draw = draw; T_glx.read = read ? read : draw; T_glx.dpy = dpy;
     T_glx.is_pix = glx_is_pixmap(draw);
+      gl_crash_install();
     return 1;
 }
 
@@ -915,6 +934,35 @@ GLX_EXPORT int glXQueryCurrentRendererIntegerMESA(int attr, unsigned* v);
 GLX_EXPORT const char* glXQueryRendererStringMESA(void* dpy, int screen, int renderer, int attr);
 GLX_EXPORT const char* glXQueryCurrentRendererStringMESA(int attr);
 
+/* EGL_MESA_query_driver: driver name/config comes from the EGL layer */
+typedef const char* (*PFN_drv_str)(void*);
+
+static const char glx_driinfo[] =
+    "<?xml version=\"1.0\" standalone=\"yes\"?>\n<driinfo>\n</driinfo>\n";
+
+static const char* glx_egl_drv(void* ed, const char* fn) {
+    PFN_drv_str f = (PFN_drv_str)eglGetProcAddress(fn);
+    return (f && ed) ? f(ed) : NULL;
+}
+
+GLX_EXPORT const char* glXGetScreenDriver(void* dpy, int screen) {
+    (void)screen;
+    const char* n = glx_egl_drv(glx_display(dpy), "eglGetDisplayDriverName");
+    return n ? n : "mali";
+}
+
+GLX_EXPORT const char* glXGetDriverConfig(const char* driverName) {
+    if (!driverName) return NULL;
+    void* ed = glx_edpy;                         /* no dpy parameter in this API */
+    const char* en = glx_egl_drv(ed, "eglGetDisplayDriverName");
+    if (en && strcmp(driverName, en) != 0) {     /* Mesa: another driver -> NULL */
+        if (glx_debug_enabled())
+            fprintf(stderr, "[glx] glXGetDriverConfig('%s') != '%s' -> NULL\n", driverName, en);
+        return NULL;
+    }
+    const char* cfg = glx_egl_drv(ed, "eglGetDisplayDriverConfig");
+    return cfg ? cfg : glx_driinfo;              /* fallback: empty valid XML */
+}
 
 /* ---------- glXGetProcAddress ---------- */
 GLX_EXPORT void* glXGetProcAddress(const unsigned char* name);
@@ -945,7 +993,7 @@ static void* glx_gpa(const char* name) {
         GPA(glXCreatePbuffer), GPA(glXDestroyPbuffer), GPA(glXCreateGLXPixmap),
         GPA(glXCreatePixmap), GPA(glXDestroyGLXPixmap), GPA(glXDestroyPixmap),
         GPA(glXQueryDrawable), GPA(glXQueryContext), GPA(glXSelectEvent), GPA(glXGetSelectedEvent),
-        GPA(glXSwapIntervalEXT), GPA(glXSwapIntervalMESA), GPA(glXGetSwapIntervalMESA), GPA(glXSwapIntervalSGI),
+        GPA(glXSwapIntervalEXT), GPA(glXSwapIntervalMESA), GPA(glXGetSwapIntervalMESA), GPA(glXSwapIntervalSGI), GPA(glXGetScreenDriver), GPA(glXGetDriverConfig),
         GPA(glXQueryRendererIntegerMESA), GPA(glXQueryCurrentRendererIntegerMESA),
         GPA(glXQueryRendererStringMESA), GPA(glXQueryCurrentRendererStringMESA),
     };
@@ -982,6 +1030,8 @@ static void* glx_gpa(const char* name) {
         if (!strcmp(name, arb_aliases[i].n)) return arb_aliases[i].f;
     { void* me = glx_self_sym(name); if (me) return me; }
     void* r = eglGetProcAddress(name);
+    if (!r && glx_debug_enabled())
+        fprintf(stderr, "[glx] GetProcAddress('%s') -> NULL\n", name);
     return r;
 }
 
